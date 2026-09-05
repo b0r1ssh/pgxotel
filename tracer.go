@@ -363,11 +363,8 @@ func pgErrDetails(err error) *pgconn.PgError {
 
 func pgErrType(err error) string {
 	if pgErr := pgErrDetails(err); pgErr != nil {
-		fmt.Printf("pgErr: code=%s message=%s detail=%s hint=%s position=%d internalPosition=%d internalQuery=%s where=%s schemaName=%s tableName=%s columnName=%s dataTypeName=%s constraintName=%s file=%s line=%d routine=%s\n", pgErr.Code, pgErr.Message, pgErr.Detail, pgErr.Hint, pgErr.Position, pgErr.InternalPosition, pgErr.InternalQuery, pgErr.Where, pgErr.SchemaName, pgErr.TableName, pgErr.ColumnName, pgErr.DataTypeName, pgErr.ConstraintName, pgErr.File, pgErr.Line, pgErr.Routine)
-
 		name := pgcode.Name(pgErr.Code)
 		if name != "" {
-			fmt.Printf("pgErr name: %s\n", name)
 			return name
 		}
 
