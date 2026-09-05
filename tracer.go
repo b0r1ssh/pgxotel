@@ -1,0 +1,375 @@
+package pgxotel
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+
+	"github.com/b0r1ssh/pgcode"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
+)
+
+const (
+	ScopeName = "github.com/b0r1sh/pgxotel"
+	Version   = "0.1.0"
+
+	spanConnect = "db.connect"
+	spanAcquire = "db.pool.acquire"
+	spanCopy    = "db.copy"
+	spanPrepare = "db.prepare"
+	spanBatch   = "db.batch"
+	spanQuery   = "db.query"
+)
+
+var (
+	_ pgx.QueryTracer       = (*Tracer)(nil)
+	_ pgx.ConnectTracer     = (*Tracer)(nil)
+	_ pgx.PrepareTracer     = (*Tracer)(nil)
+	_ pgx.CopyFromTracer    = (*Tracer)(nil)
+	_ pgxpool.AcquireTracer = (*Tracer)(nil)
+	_ pgx.BatchTracer       = (*Tracer)(nil)
+)
+
+type Tracer struct {
+	tracer trace.Tracer
+
+	attributes         []attribute.KeyValue
+	captureQueryParams bool
+}
+
+func NewTracer(opts ...Option) *Tracer {
+	o := newOptions(opts...)
+
+	tracer := o.tracerProvider.Tracer(ScopeName, trace.WithInstrumentationVersion(Version))
+
+	return &Tracer{
+		tracer:             tracer,
+		attributes:         o.attributes,
+		captureQueryParams: o.captureQueryParams,
+	}
+}
+
+// TraceConnectStart implements [pgx.ConnectTracer].
+func (t *Tracer) TraceConnectStart(ctx context.Context, data pgx.TraceConnectStartData) context.Context {
+	if !trace.SpanFromContext(ctx).IsRecording() {
+		return ctx
+	}
+
+	attrs := append(t.attributes, connectionAttributesFromPgxConfig(data.ConnConfig)...)
+
+	spanCtx, _ := t.tracer.Start(ctx, spanConnect,
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attrs...),
+	)
+
+	return spanCtx
+}
+
+// TraceConnectEnd implements [pgx.ConnectTracer].
+func (t *Tracer) TraceConnectEnd(ctx context.Context, data pgx.TraceConnectEndData) {
+	span := trace.SpanFromContext(ctx)
+	if !span.IsRecording() {
+		return
+	}
+
+	defer span.End()
+
+	if data.Err != nil {
+		span.RecordError(data.Err)
+		span.SetStatus(codes.Error, data.Err.Error())
+		span.SetAttributes(semconv.ErrorTypeKey.String(pgErrType(data.Err)))
+	} else {
+		span.SetStatus(codes.Ok, "")
+	}
+}
+
+// TraceAcquireStart implements [pgxpool.AcquireTracer].
+func (t *Tracer) TraceAcquireStart(ctx context.Context, pool *pgxpool.Pool, _ pgxpool.TraceAcquireStartData) context.Context {
+	if !trace.SpanFromContext(ctx).IsRecording() {
+		return ctx
+	}
+
+	attrs := append(t.attributes, connectionAttributesFromPgxConfig(pool.Config().ConnConfig)...)
+
+	spanCtx, _ := t.tracer.Start(ctx, spanAcquire,
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attrs...),
+	)
+
+	return spanCtx
+}
+
+// TraceAcquireEnd implements [pgxpool.AcquireTracer].
+func (t *Tracer) TraceAcquireEnd(ctx context.Context, pool *pgxpool.Pool, data pgxpool.TraceAcquireEndData) {
+	span := trace.SpanFromContext(ctx)
+	if !span.IsRecording() {
+		return
+	}
+
+	defer span.End()
+
+	if data.Err != nil {
+		span.RecordError(data.Err)
+		span.SetStatus(codes.Error, data.Err.Error())
+		span.SetAttributes(semconv.ErrorTypeKey.String(pgErrType(data.Err)))
+	} else {
+		span.SetStatus(codes.Ok, "")
+	}
+}
+
+// TraceCopyFromStart implements [pgx.CopyFromTracer].
+func (t *Tracer) TraceCopyFromStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceCopyFromStartData) context.Context {
+	if !trace.SpanFromContext(ctx).IsRecording() {
+		return ctx
+	}
+
+	attrs := append(t.attributes, connectionAttributesFromPgxConfig(conn.Config())...)
+	attrs = append(attrs, collectAttributeFrom(data.TableName))
+
+	spanCtx, _ := t.tracer.Start(ctx, spanCopy,
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attrs...),
+	)
+
+	return spanCtx
+}
+
+// TraceCopyFromEnd implements [pgx.CopyFromTracer].
+func (t *Tracer) TraceCopyFromEnd(ctx context.Context, conn *pgx.Conn, data pgx.TraceCopyFromEndData) {
+	span := trace.SpanFromContext(ctx)
+	if !span.IsRecording() {
+		return
+	}
+
+	defer span.End()
+
+	if data.Err != nil {
+		span.RecordError(data.Err)
+		span.SetStatus(codes.Error, data.Err.Error())
+		span.SetAttributes(semconv.ErrorTypeKey.String(pgErrType(data.Err)))
+	} else {
+		span.SetStatus(codes.Ok, "")
+	}
+}
+
+// TracePrepareStart implements [pgx.PrepareTracer].
+func (t *Tracer) TracePrepareStart(ctx context.Context, conn *pgx.Conn, data pgx.TracePrepareStartData) context.Context {
+	if !trace.SpanFromContext(ctx).IsRecording() {
+		return ctx
+	}
+
+	attrs := append(t.attributes, connectionAttributesFromPgxConfig(conn.Config())...)
+	attrs = append(attrs, semconv.DBQueryText(data.SQL))
+
+	spanCtx, _ := t.tracer.Start(ctx, spanPrepare,
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attrs...),
+	)
+
+	return spanCtx
+}
+
+// TracePrepareEnd implements [pgx.PrepareTracer].
+func (t *Tracer) TracePrepareEnd(ctx context.Context, conn *pgx.Conn, data pgx.TracePrepareEndData) {
+	span := trace.SpanFromContext(ctx)
+	if !span.IsRecording() {
+		return
+	}
+
+	defer span.End()
+
+	if data.Err != nil {
+		span.RecordError(data.Err)
+		span.SetStatus(codes.Error, data.Err.Error())
+		span.SetAttributes(semconv.ErrorTypeKey.String(pgErrType(data.Err)))
+	} else {
+		span.SetStatus(codes.Ok, "")
+	}
+}
+
+// TraceBatchStart implements [pgx.BatchTracer].
+func (t *Tracer) TraceBatchStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchStartData) context.Context {
+	if !trace.SpanFromContext(ctx).IsRecording() {
+		return ctx
+	}
+
+	attrs := append(t.attributes, connectionAttributesFromPgxConfig(conn.Config())...)
+
+	size := 0
+	if b := data.Batch; b != nil {
+		size = b.Len()
+	}
+	attrs = append(attrs, semconv.DBOperationBatchSize(size))
+
+	spanCtx, _ := t.tracer.Start(ctx, spanBatch,
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attrs...),
+	)
+
+	return spanCtx
+}
+
+// TraceBatchEnd implements [pgx.BatchTracer].
+func (t *Tracer) TraceBatchEnd(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchEndData) {
+	span := trace.SpanFromContext(ctx)
+	if !span.IsRecording() {
+		return
+	}
+
+	defer span.End()
+
+	if data.Err != nil {
+		span.RecordError(data.Err)
+		span.SetStatus(codes.Error, data.Err.Error())
+		span.SetAttributes(semconv.ErrorTypeKey.String(pgErrType(data.Err)))
+	} else {
+		span.SetStatus(codes.Ok, "")
+	}
+}
+
+func (t *Tracer) TraceBatchQuery(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchQueryData) {
+	span := trace.SpanFromContext(ctx)
+	if !span.IsRecording() {
+		return
+	}
+
+	defer span.End()
+
+	attrs := append(t.attributes, connectionAttributesFromPgxConfig(conn.Config())...)
+	attrs = append(attrs, operationAttributeFromCommandTag(data.CommandTag))
+	attrs = append(attrs, retunredRowsAttributeFromCommandTag(data.CommandTag))
+	attrs = append(attrs, semconv.DBQueryText(data.SQL))
+
+	if t.captureQueryParams {
+		attrs = append(attrs, queryParameterAttributesFromArgs(data.Args)...)
+	}
+
+	span.SetAttributes(attrs...)
+}
+
+// TraceQueryStart implements [pgx.QueryTracer].
+func (t *Tracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if !trace.SpanFromContext(ctx).IsRecording() {
+		return ctx
+	}
+
+	attrs := append(t.attributes, connectionAttributesFromPgxConfig(conn.Config())...)
+	attrs = append(attrs, semconv.DBQueryText(data.SQL))
+
+	if t.captureQueryParams {
+		attrs = append(attrs, queryParameterAttributesFromArgs(data.Args)...)
+	}
+
+	spanCtx, _ := t.tracer.Start(ctx, spanQuery,
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attrs...),
+	)
+
+	return spanCtx
+}
+
+// TraceQueryEnd implements [pgx.QueryTracer].
+func (t *Tracer) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryEndData) {
+	span := trace.SpanFromContext(ctx)
+	if !span.IsRecording() {
+		return
+	}
+
+	defer span.End()
+
+	span.SetAttributes(operationAttributeFromCommandTag(data.CommandTag))
+	span.SetAttributes(retunredRowsAttributeFromCommandTag(data.CommandTag))
+
+	if data.Err != nil {
+		span.RecordError(data.Err)
+		span.SetStatus(codes.Error, data.Err.Error())
+		span.SetAttributes(semconv.ErrorTypeKey.String(pgErrType(data.Err)))
+	} else {
+		span.SetStatus(codes.Ok, "")
+	}
+}
+
+func connectionAttributesFromPgxConfig(config *pgx.ConnConfig) []attribute.KeyValue {
+	attrs := make([]attribute.KeyValue, 0)
+
+	if config != nil {
+		attrs = append(attrs, semconv.DBSystemNamePostgreSQL)
+
+		attrs = append(attrs, semconv.ServerAddress(config.Host))
+		attrs = append(attrs, semconv.ServerPort(int(config.Port)))
+
+		if config.User != "" {
+			attrs = append(attrs, semconv.UserName(config.User))
+		}
+
+		if config.Database != "" {
+			attrs = append(attrs, semconv.DBNamespace(config.Database))
+		}
+	}
+
+	return attrs
+}
+
+func operationAttributeFromCommandTag(tag pgconn.CommandTag) attribute.KeyValue {
+	switch {
+	case tag.Select():
+		return semconv.DBOperationName("SELECT")
+	case tag.Insert():
+		return semconv.DBOperationName("INSERT")
+	case tag.Update():
+		return semconv.DBOperationName("UPDATE")
+	case tag.Delete():
+		return semconv.DBOperationName("DELETE")
+	}
+
+	return semconv.DBOperationName(strings.ToUpper(tag.String()))
+}
+
+func retunredRowsAttributeFromCommandTag(tag pgconn.CommandTag) attribute.KeyValue {
+	return semconv.DBResponseReturnedRows(int(tag.RowsAffected()))
+}
+
+func collectAttributeFrom(tableName pgx.Identifier) attribute.KeyValue {
+	return semconv.DBCollectionName(strings.Join(tableName, "."))
+}
+
+// queryParameterAttributesFromArgs maps positional pgx query args to db.query.parameter.$N attributes.
+func queryParameterAttributesFromArgs(args []any) []attribute.KeyValue {
+	attrs := make([]attribute.KeyValue, 0, len(args))
+
+	for i, arg := range args {
+		key := strconv.Itoa(i + 1)
+		attrs = append(attrs, semconv.DBQueryParameter(key, fmt.Sprintf("%v", arg)))
+	}
+
+	return attrs
+}
+
+func pgErrDetails(err error) *pgconn.PgError {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr
+	}
+	return nil
+}
+
+func pgErrType(err error) string {
+	if pgErr := pgErrDetails(err); pgErr != nil {
+		name := pgcode.Name(pgErr.Code)
+		if name != "" {
+			return name
+		}
+
+		return pgErr.Code
+	}
+
+	return err.Error()
+}
