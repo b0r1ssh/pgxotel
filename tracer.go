@@ -247,8 +247,6 @@ func (t *Tracer) TraceBatchQuery(ctx context.Context, conn *pgx.Conn, data pgx.T
 		return
 	}
 
-	defer span.End()
-
 	attrs := append(t.attributes, connectionAttributesFromPgxConfig(conn.Config())...)
 	attrs = append(attrs, operationAttributeFromCommandTag(data.CommandTag))
 	attrs = append(attrs, retunredRowsAttributeFromCommandTag(data.CommandTag))
@@ -332,9 +330,7 @@ func networkPeerAttributesFromConn(conn *pgx.Conn) []attribute.KeyValue {
 	netConn := conn.PgConn().Conn()
 	remoteAddr := netConn.RemoteAddr()
 	localAddr := netConn.LocalAddr()
-	attrs := make([]attribute.KeyValue, 0, 7)
-
-	fmt.Println("remoteAddr:", remoteAddr, "localAddr:", localAddr)
+	attrs := make([]attribute.KeyValue, 0, 2)
 
 	switch remoteAddr := remoteAddr.(type) {
 	case *net.TCPAddr:
@@ -391,7 +387,6 @@ func collectAttributeFrom(tableName pgx.Identifier) attribute.KeyValue {
 	return semconv.DBCollectionName(strings.Join(tableName, "."))
 }
 
-// queryParameterAttributesFromArgs maps positional pgx query args to db.query.parameter.$N attributes.
 func queryParameterAttributesFromArgs(args []any) []attribute.KeyValue {
 	attrs := make([]attribute.KeyValue, 0, len(args))
 
