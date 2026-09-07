@@ -3,129 +3,154 @@ package pgxotel_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"testing"
 
 	"github.com/b0r1sh/pgxotel"
 	"github.com/jackc/pgx/v5"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
-func TestTraceConnect(t *testing.T) {
-	t.Parallel()
+const databaseURL = "postgres://pgxotel:pgxotel@localhost:5432/pgxotel"
 
-	config, err := pgx.ParseConfig("postgres://user:secret@localhost:5433/database")
+func setupFixture(t *testing.T, opts ...pgxotel.Option) (*trace.TracerProvider, *tracetest.InMemoryExporter, *pgx.ConnConfig) {
+	t.Helper()
+
+	exporter := tracetest.NewInMemoryExporter()
+	tp := trace.NewTracerProvider(trace.WithSyncer(exporter))
+	t.Cleanup(func() {
+		if err := tp.Shutdown(context.Background()); err != nil {
+			t.Fatalf("failed to shutdown tracer provider: %v", err)
+		}
+	})
+
+	config, err := pgx.ParseConfig(databaseURL)
 	if err != nil {
 		t.Fatalf("parse config: %v", err)
 	}
 
-	tests := []struct {
-		name string
-		err  error
-		code codes.Code
-		attr map[string]any
-	}{
-		{
-			name: "without error",
-			code: codes.Ok,
-			attr: map[string]any{
-				"db.system.name": "postgresql",
-				"server.address": "localhost",
-				"server.port":    5433,
-				"user.name":      "user",
-				"db.namespace":   "database",
-			},
-		},
-		{
-			name: "with error",
-			err:  errors.New("dial timeout"),
-			code: codes.Error,
-			attr: map[string]any{
-				"db.system.name": "postgresql",
-				"server.address": "localhost",
-				"server.port":    5433,
-				"user.name":      "user",
-				"db.namespace":   "database",
-				"error.type":     "dial timeout",
-			},
-		},
-	}
+	config.Tracer = pgxotel.NewTracer(append([]pgxotel.Option{pgxotel.WithTracerProvider(tp)}, opts...)...)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	return tp, exporter, config
+}
 
-			exporter := tracetest.NewInMemoryExporter()
-			tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
-			t.Cleanup(func() {
-				err := tp.Shutdown(context.Background())
-				if err != nil {
-					t.Fatalf("failed to shutdown tracer provider: %v", err)
-				}
-			})
+func TestTraceConnect(t *testing.T) {
+	t.Parallel()
 
-			tr := pgxotel.NewTracer(pgxotel.WithTracerProvider(tp))
-
-			rootCtx, rootSpan := tp.Tracer(t.Name()).Start(t.Context(), "root")
-			t.Cleanup(func() { rootSpan.End() })
-
-			ctx := tr.TraceConnectStart(rootCtx, pgx.TraceConnectStartData{ConnConfig: config})
-			tr.TraceConnectEnd(ctx, pgx.TraceConnectEndData{Err: tt.err})
-
-			spans := exporter.GetSpans()
-			if len(spans) != 1 {
-				t.Fatalf("expected exactly 1 ended span, got %d", len(spans))
-			}
-
-			span := spans[0]
-
-			if got, want := span.Status.Code, tt.code; got != want {
-				t.Fatalf("unexpected status code: got %v want %v", got, want)
-			}
-
-			if got, want := span.Attributes, tt.attr; !attributesEqual(got, want) {
-				t.Fatalf("unexpected attributes: got %v want %v", got, want)
-			}
-		})
-	}
-
-	t.Run("without parent span", func(t *testing.T) {
+	t.Run("without error", func(t *testing.T) {
 		t.Parallel()
 
-		exporter := tracetest.NewInMemoryExporter()
-		tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
-		t.Cleanup(func() {
-			err := tp.Shutdown(context.Background())
-			if err != nil {
-				t.Fatalf("failed to shutdown tracer provider: %v", err)
-			}
+		tp, exporter, config := setupFixture(t, pgxotel.WithNetworkAttributes(true))
+
+		rootCtx, rootSpan := tp.Tracer(t.Name()).Start(t.Context(), "root")
+		t.Cleanup(func() { rootSpan.End() })
+
+		conn, err := pgx.ConnectConfig(rootCtx, config)
+		if err != nil {
+			t.Fatalf("connect to postgres: %v", err)
+		}
+		t.Cleanup(func() { _ = conn.Close(context.Background()) })
+
+		remoteAddr, ok := conn.PgConn().Conn().RemoteAddr().(*net.TCPAddr)
+		if !ok {
+			t.Fatalf("expected TCP remote address, got %T", conn.PgConn().Conn().RemoteAddr())
+		}
+
+		localAddr, ok := conn.PgConn().Conn().LocalAddr().(*net.TCPAddr)
+		if !ok {
+			t.Fatalf("expected TCP local address, got %T", conn.PgConn().Conn().LocalAddr())
+		}
+
+		networkType := "ipv6"
+		if remoteAddr.IP.To4() != nil {
+			networkType = "ipv4"
+		}
+
+		span, err := getSpanByName(exporter.GetSpans(), "db.connect", map[string]any{
+			"db.system.name":        "postgresql",
+			"server.address":        "localhost",
+			"server.port":           5432,
+			"user.name":             "pgxotel",
+			"db.namespace":          "pgxotel",
+			"network.transport":     "tcp",
+			"network.peer.address":  remoteAddr.IP.String(),
+			"network.peer.port":     remoteAddr.Port,
+			"network.type":          networkType,
+			"network.local.address": localAddr.IP.String(),
+			"network.local.port":    localAddr.Port,
 		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if span.Status.Code != codes.Ok {
+			t.Fatalf("unexpected status code: got %v want %v", span.Status.Code, codes.Ok)
+		}
+	})
 
-		tr := pgxotel.NewTracer(pgxotel.WithTracerProvider(tp))
+	t.Run("with error", func(t *testing.T) {
+		t.Parallel()
 
-		ctx := tr.TraceConnectStart(context.Background(), pgx.TraceConnectStartData{ConnConfig: config})
-		tr.TraceConnectEnd(ctx, pgx.TraceConnectEndData{})
+		tp, exporter, config := setupFixture(t)
 
-		if got := len(exporter.GetSpans()); got != 0 {
-			t.Fatalf("expected no spans when parent context is not recording, got %d", got)
+		rootCtx, rootSpan := tp.Tracer(t.Name()).Start(t.Context(), "root")
+		t.Cleanup(func() { rootSpan.End() })
+
+		config.DialFunc = func(context.Context, string, string) (net.Conn, error) {
+			return nil, errors.New("dial timeout")
+		}
+		_, err := pgx.ConnectConfig(rootCtx, config)
+		if err == nil {
+			t.Fatal("expected connection error")
+		}
+		connectionErr := err
+
+		span, err := getSpanByName(exporter.GetSpans(), "db.connect", map[string]any{
+			"db.system.name": "postgresql",
+			"server.address": "localhost",
+			"server.port":    5432,
+			"user.name":      "pgxotel",
+			"db.namespace":   "pgxotel",
+			"error.type":     connectionErr.Error(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if span.Status.Code != codes.Error {
+			t.Fatalf("unexpected status code: got %v want %v", span.Status.Code, codes.Error)
 		}
 	})
 }
 
-func attributesEqual(got []attribute.KeyValue, want map[string]any) bool {
-	if len(got) != len(want) {
-		return false
-	}
-
-	for _, kv := range got {
-		w, ok := want[string(kv.Key)]
-		if !ok {
-			return false
+func getSpanByName(spans tracetest.SpanStubs, name string, wantAttributes map[string]any) (tracetest.SpanStub, error) {
+	for _, span := range spans {
+		if span.Name != name {
+			continue
 		}
 
-		if !attributeValueEqual(kv.Value, w) {
+		if len(span.Attributes) != len(wantAttributes) || !attributesContain(span.Attributes, wantAttributes) {
+			return tracetest.SpanStub{}, fmt.Errorf("span %q has unexpected attributes: got %v want %v", name, span.Attributes, wantAttributes)
+		}
+
+		return span, nil
+	}
+
+	return tracetest.SpanStub{}, fmt.Errorf("span %q not found", name)
+}
+
+func attributesContain(got []attribute.KeyValue, want map[string]any) bool {
+	for key, wantValue := range want {
+		found := false
+		for _, kv := range got {
+			if string(kv.Key) == key && attributeValueEqual(kv.Value, wantValue) {
+				found = true
+				break
+			}
+		}
+		if !found {
 			return false
 		}
 	}
