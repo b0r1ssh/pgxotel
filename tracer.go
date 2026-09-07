@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 
@@ -41,8 +42,9 @@ var (
 type Tracer struct {
 	tracer trace.Tracer
 
-	attributes         []attribute.KeyValue
-	captureQueryParams bool
+	attributes          []attribute.KeyValue
+	captureQueryParams  bool
+	captureNetworkAttrs bool
 }
 
 func NewTracer(opts ...Option) *Tracer {
@@ -51,9 +53,10 @@ func NewTracer(opts ...Option) *Tracer {
 	tracer := o.tracerProvider.Tracer(ScopeName, trace.WithInstrumentationVersion(Version))
 
 	return &Tracer{
-		tracer:             tracer,
-		attributes:         o.attributes,
-		captureQueryParams: o.captureQueryParams,
+		tracer:              tracer,
+		attributes:          o.attributes,
+		captureQueryParams:  o.captureQueryParams,
+		captureNetworkAttrs: o.captureNetworkAttrs,
 	}
 }
 
@@ -87,6 +90,9 @@ func (t *Tracer) TraceConnectEnd(ctx context.Context, data pgx.TraceConnectEndDa
 		span.SetStatus(codes.Error, data.Err.Error())
 		span.SetAttributes(semconv.ErrorTypeKey.String(pgErrType(data.Err)))
 	} else {
+		if t.captureNetworkAttrs {
+			span.SetAttributes(networkPeerAttributesFromConn(data.Conn)...)
+		}
 		span.SetStatus(codes.Ok, "")
 	}
 }
@@ -313,6 +319,50 @@ func connectionAttributesFromPgxConfig(config *pgx.ConnConfig) []attribute.KeyVa
 		if config.Database != "" {
 			attrs = append(attrs, semconv.DBNamespace(config.Database))
 		}
+	}
+
+	return attrs
+}
+
+func networkPeerAttributesFromConn(conn *pgx.Conn) []attribute.KeyValue {
+	if conn == nil || conn.PgConn() == nil || conn.PgConn().Conn() == nil {
+		return nil
+	}
+
+	netConn := conn.PgConn().Conn()
+	remoteAddr := netConn.RemoteAddr()
+	localAddr := netConn.LocalAddr()
+	attrs := make([]attribute.KeyValue, 0, 7)
+
+	fmt.Println("remoteAddr:", remoteAddr, "localAddr:", localAddr)
+
+	switch remoteAddr := remoteAddr.(type) {
+	case *net.TCPAddr:
+		attrs = append(attrs,
+			semconv.NetworkTransportTCP,
+			semconv.NetworkPeerAddress(remoteAddr.IP.String()),
+			semconv.NetworkPeerPort(remoteAddr.Port),
+		)
+		if remoteAddr.IP.To4() != nil {
+			attrs = append(attrs, semconv.NetworkTypeIPv4)
+		} else {
+			attrs = append(attrs, semconv.NetworkTypeIPv6)
+		}
+	case *net.UnixAddr:
+		attrs = append(attrs,
+			semconv.NetworkTransportUnix,
+			semconv.NetworkPeerAddress(remoteAddr.Name),
+		)
+	}
+
+	switch localAddr := localAddr.(type) {
+	case *net.TCPAddr:
+		attrs = append(attrs,
+			semconv.NetworkLocalAddress(localAddr.IP.String()),
+			semconv.NetworkLocalPort(localAddr.Port),
+		)
+	case *net.UnixAddr:
+		attrs = append(attrs, semconv.NetworkLocalAddress(localAddr.Name))
 	}
 
 	return attrs

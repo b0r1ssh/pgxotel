@@ -7,9 +7,10 @@ import (
 )
 
 type options struct {
-	tracerProvider     trace.TracerProvider
-	attributes         []attribute.KeyValue
-	captureQueryParams bool
+	tracerProvider      trace.TracerProvider
+	attributes          []attribute.KeyValue
+	captureQueryParams  bool
+	captureNetworkAttrs bool
 }
 
 type Option interface {
@@ -52,11 +53,23 @@ func WithQueryParameters(enabled bool) Option {
 	return captureQueryParamsOption(enabled)
 }
 
+type captureNetworkAttributesOption bool
+
+func (c captureNetworkAttributesOption) apply(opts *options) {
+	opts.captureNetworkAttrs = bool(c)
+}
+
+// WithNetworkAttributes enables network.peer.* attributes on connection spans.
+func WithNetworkAttributes(enabled bool) Option {
+	return captureNetworkAttributesOption(enabled)
+}
+
 func newOptions(opts ...Option) *options {
 	o := &options{
-		tracerProvider:     otel.GetTracerProvider(),
-		attributes:         make([]attribute.KeyValue, 0),
-		captureQueryParams: false,
+		tracerProvider:      otel.GetTracerProvider(),
+		attributes:          make([]attribute.KeyValue, 0),
+		captureQueryParams:  false,
+		captureNetworkAttrs: false,
 	}
 
 	for _, opt := range opts {
