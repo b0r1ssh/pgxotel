@@ -134,6 +134,7 @@ func TestTraceAcquire(t *testing.T) {
 		t.Parallel()
 
 		tp, exporter, config := setupFixture(t)
+
 		rootCtx, rootSpan := tp.Tracer("tracer").Start(t.Context(), "root")
 		t.Cleanup(func() { rootSpan.End() })
 
@@ -174,6 +175,7 @@ func TestTraceAcquire(t *testing.T) {
 		t.Parallel()
 
 		tp, exporter, config := setupFixture(t)
+
 		rootCtx, rootSpan := tp.Tracer("tracer").Start(t.Context(), "root")
 		t.Cleanup(func() { rootSpan.End() })
 
@@ -225,6 +227,7 @@ func TestTraceBatch(t *testing.T) {
 			pgxotel.WithQueryParameters(true),
 			pgxotel.WithAttributes(attribute.String("test.attribute", "batch")),
 		)
+
 		rootCtx, rootSpan := tp.Tracer("tracer").Start(t.Context(), "root")
 		t.Cleanup(func() { rootSpan.End() })
 
@@ -266,6 +269,7 @@ func TestTraceBatch(t *testing.T) {
 		t.Parallel()
 
 		tp, exporter, config := setupFixture(t)
+
 		rootCtx, rootSpan := tp.Tracer("tracer").Start(t.Context(), "root")
 		t.Cleanup(func() { rootSpan.End() })
 
@@ -307,6 +311,7 @@ func TestTracePrepare(t *testing.T) {
 		t.Parallel()
 
 		tp, exporter, config := setupFixture(t)
+
 		rootCtx, rootSpan := tp.Tracer("tracer").Start(t.Context(), "root")
 		t.Cleanup(func() { rootSpan.End() })
 
@@ -340,6 +345,7 @@ func TestTracePrepare(t *testing.T) {
 		t.Parallel()
 
 		tp, exporter, config := setupFixture(t)
+
 		rootCtx, rootSpan := tp.Tracer("tracer").Start(t.Context(), "root")
 		t.Cleanup(func() { rootSpan.End() })
 
@@ -379,6 +385,7 @@ func TestTraceCopyFrom(t *testing.T) {
 		t.Parallel()
 
 		tp, exporter, config := setupFixture(t)
+
 		rootCtx, rootSpan := tp.Tracer("tracer").Start(t.Context(), "root")
 		t.Cleanup(func() { rootSpan.End() })
 
@@ -415,6 +422,7 @@ func TestTraceCopyFrom(t *testing.T) {
 		t.Parallel()
 
 		tp, exporter, config := setupFixture(t)
+
 		rootCtx, rootSpan := tp.Tracer("tracer").Start(t.Context(), "root")
 		t.Cleanup(func() { rootSpan.End() })
 
@@ -460,6 +468,7 @@ func TestTraceQuery(t *testing.T) {
 			pgxotel.WithQueryParameters(true),
 			pgxotel.WithAttributes(attribute.String("test.attribute", "query")),
 		)
+
 		rootCtx, rootSpan := tp.Tracer("tracer").Start(t.Context(), "root")
 		t.Cleanup(func() { rootSpan.End() })
 
@@ -497,6 +506,7 @@ func TestTraceQuery(t *testing.T) {
 		t.Parallel()
 
 		tp, exporter, config := setupFixture(t)
+
 		rootCtx, rootSpan := tp.Tracer("tracer").Start(t.Context(), "root")
 		t.Cleanup(func() { rootSpan.End() })
 
@@ -574,7 +584,6 @@ func attributeValueEqual(got attribute.Value, want any) bool {
 		return got.Type() == attribute.INT64 && got.AsInt64() == int64(w)
 	case float64:
 		return got.Type() == attribute.FLOAT64 && got.AsFloat64() == w
-	default:
-		return false
 	}
+	return false
 }

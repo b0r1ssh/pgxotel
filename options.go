@@ -11,6 +11,9 @@ type options struct {
 	attributes          []attribute.KeyValue
 	captureQueryParams  bool
 	captureNetworkAttrs bool
+	omitQueryComments   bool
+	captureQuerySummary bool
+	captureSQLCName     bool
 }
 
 type Option interface {
@@ -64,12 +67,48 @@ func WithNetworkAttributes(enabled bool) Option {
 	return captureNetworkAttributesOption(enabled)
 }
 
+type queryCommentsOption bool
+
+func (q queryCommentsOption) apply(opts *options) {
+	opts.omitQueryComments = !bool(q)
+}
+
+// WithQueryComments controls whether SQL comments are kept in db.query.text.
+func WithQueryComments(enabled bool) Option {
+	return queryCommentsOption(enabled)
+}
+
+type captureQuerySummaryOption bool
+
+func (c captureQuerySummaryOption) apply(opts *options) {
+	opts.captureQuerySummary = bool(c)
+}
+
+// WithQuerySummary enables capturing a low-cardinality db.query.summary generated from query text.
+func WithQuerySummary(enabled bool) Option {
+	return captureQuerySummaryOption(enabled)
+}
+
+type captureSQLCNameOption bool
+
+func (c captureSQLCNameOption) apply(opts *options) {
+	opts.captureSQLCName = bool(c)
+}
+
+// WithSQLCQueryName enables using a leading sqlc -- name: directive as db.query.summary.
+func WithSQLCQueryName(enabled bool) Option {
+	return captureSQLCNameOption(enabled)
+}
+
 func newOptions(opts ...Option) *options {
 	o := &options{
 		tracerProvider:      otel.GetTracerProvider(),
 		attributes:          make([]attribute.KeyValue, 0),
 		captureQueryParams:  false,
 		captureNetworkAttrs: false,
+		omitQueryComments:   false,
+		captureQuerySummary: false,
+		captureSQLCName:     false,
 	}
 
 	for _, opt := range opts {
