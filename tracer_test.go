@@ -93,6 +93,51 @@ func TestTraceConnect(t *testing.T) {
 		}
 	})
 
+	t.Run("with collection name", func(t *testing.T) {
+		t.Parallel()
+
+		tp, exporter, config := setupFixture(t, pgxotel.WithQueryCollectionName(true))
+		rootCtx, rootSpan := tp.Tracer("tracer").Start(t.Context(), "root")
+		t.Cleanup(func() { rootSpan.End() })
+
+		conn, err := pgx.ConnectConfig(rootCtx, config)
+		if err != nil {
+			t.Fatalf("connect to postgres: %v", err)
+		}
+		t.Cleanup(func() { _ = conn.Close(context.Background()) })
+
+		if _, err := conn.Exec(rootCtx, "CREATE TEMP TABLE trace_batch_collection (value int)"); err != nil {
+			t.Fatalf("create temp table: %v", err)
+		}
+		exporter.Reset()
+
+		var batch pgx.Batch
+		batch.Queue("SELECT * FROM trace_batch_collection")
+		results := conn.SendBatch(rootCtx, &batch)
+		if err := results.Close(); err != nil {
+			t.Fatalf("execute batch: %v", err)
+		}
+
+		span, err := getSpanByName(exporter.GetSpans(), "db.batch", map[string]any{
+			"db.system.name":            "postgresql",
+			"server.address":            "localhost",
+			"server.port":               5432,
+			"user.name":                 "pgxotel",
+			"db.namespace":              "pgxotel",
+			"db.operation.batch.size":   1,
+			"db.operation.name":         "SELECT",
+			"db.response.returned_rows": 0,
+			"db.collection.name":        "trace_batch_collection",
+			"db.query.text":             "SELECT * FROM trace_batch_collection",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if span.Status.Code != codes.Ok {
+			t.Fatalf("unexpected status code: got %v want %v", span.Status.Code, codes.Ok)
+		}
+	})
+
 	t.Run("with error", func(t *testing.T) {
 		t.Parallel()
 
@@ -161,6 +206,45 @@ func TestTraceAcquire(t *testing.T) {
 			"server.port":    5432,
 			"user.name":      "pgxotel",
 			"db.namespace":   "pgxotel",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if span.Status.Code != codes.Ok {
+			t.Fatalf("unexpected status code: got %v want %v", span.Status.Code, codes.Ok)
+		}
+	})
+
+	t.Run("with collection name", func(t *testing.T) {
+		t.Parallel()
+
+		tp, exporter, config := setupFixture(t, pgxotel.WithQueryCollectionName(true))
+		rootCtx, rootSpan := tp.Tracer("tracer").Start(t.Context(), "root")
+		t.Cleanup(func() { rootSpan.End() })
+
+		conn, err := pgx.ConnectConfig(rootCtx, config)
+		if err != nil {
+			t.Fatalf("connect to postgres: %v", err)
+		}
+		t.Cleanup(func() { _ = conn.Close(context.Background()) })
+
+		if _, err := conn.Exec(rootCtx, "CREATE TEMP TABLE trace_prepare_collection (value int)"); err != nil {
+			t.Fatalf("create temp table: %v", err)
+		}
+		exporter.Reset()
+
+		if _, err := conn.Prepare(rootCtx, "trace_prepare_collection", "SELECT * FROM trace_prepare_collection"); err != nil {
+			t.Fatalf("prepare query: %v", err)
+		}
+
+		span, err := getSpanByName(exporter.GetSpans(), "db.prepare", map[string]any{
+			"db.system.name":     "postgresql",
+			"server.address":     "localhost",
+			"server.port":        5432,
+			"user.name":          "pgxotel",
+			"db.namespace":       "pgxotel",
+			"db.collection.name": "trace_prepare_collection",
+			"db.query.text":      "SELECT * FROM trace_prepare_collection",
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -253,6 +337,47 @@ func TestTraceBatch(t *testing.T) {
 			"db.query.text":             "SELECT $1::int",
 			"db.query.parameter.1":      "42",
 			"test.attribute":            "batch",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if span.Status.Code != codes.Ok {
+			t.Fatalf("unexpected status code: got %v want %v", span.Status.Code, codes.Ok)
+		}
+	})
+
+	t.Run("with collection name", func(t *testing.T) {
+		t.Parallel()
+
+		tp, exporter, config := setupFixture(t, pgxotel.WithQueryCollectionName(true))
+		rootCtx, rootSpan := tp.Tracer("tracer").Start(t.Context(), "root")
+		t.Cleanup(func() { rootSpan.End() })
+
+		conn, err := pgx.ConnectConfig(rootCtx, config)
+		if err != nil {
+			t.Fatalf("connect to postgres: %v", err)
+		}
+		t.Cleanup(func() { _ = conn.Close(context.Background()) })
+
+		if _, err := conn.Exec(rootCtx, "CREATE TEMP TABLE trace_query_collection (value int)"); err != nil {
+			t.Fatalf("create temp table: %v", err)
+		}
+		exporter.Reset()
+
+		if _, err := conn.Exec(rootCtx, "SELECT * FROM trace_query_collection"); err != nil {
+			t.Fatalf("execute query: %v", err)
+		}
+
+		span, err := getSpanByName(exporter.GetSpans(), "db.query", map[string]any{
+			"db.system.name":            "postgresql",
+			"server.address":            "localhost",
+			"server.port":               5432,
+			"user.name":                 "pgxotel",
+			"db.namespace":              "pgxotel",
+			"db.collection.name":        "trace_query_collection",
+			"db.query.text":             "SELECT * FROM trace_query_collection",
+			"db.operation.name":         "SELECT",
+			"db.response.returned_rows": 0,
 		})
 		if err != nil {
 			t.Fatal(err)

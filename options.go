@@ -6,11 +6,20 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+type SpanNameMode int
+
+const (
+	SpanNameStatic SpanNameMode = iota
+	SpanNameSemantic
+)
+
 type options struct {
 	tracerProvider      trace.TracerProvider
 	attributes          []attribute.KeyValue
 	captureQueryParams  bool
 	captureNetworkAttrs bool
+	captureCollection   bool
+	spanNameMode        SpanNameMode
 }
 
 type Option interface {
@@ -64,12 +73,37 @@ func WithNetworkAttributes(enabled bool) Option {
 	return captureNetworkAttributesOption(enabled)
 }
 
+type captureCollectionOption bool
+
+func (c captureCollectionOption) apply(opts *options) {
+	opts.captureCollection = bool(c)
+}
+
+// WithQueryCollectionName enables best-effort db.collection.name extraction from query text.
+// The attribute is only set when the query appears to reference a single collection.
+func WithQueryCollectionName(enabled bool) Option {
+	return captureCollectionOption(enabled)
+}
+
+type spanNameModeOption SpanNameMode
+
+func (s spanNameModeOption) apply(opts *options) {
+	opts.spanNameMode = SpanNameMode(s)
+}
+
+// WithSpanNameMode controls how spans are named. The default is SpanNameStatic.
+func WithSpanNameMode(mode SpanNameMode) Option {
+	return spanNameModeOption(mode)
+}
+
 func newOptions(opts ...Option) *options {
 	o := &options{
 		tracerProvider:      otel.GetTracerProvider(),
 		attributes:          make([]attribute.KeyValue, 0),
 		captureQueryParams:  false,
 		captureNetworkAttrs: false,
+		captureCollection:   false,
+		spanNameMode:        SpanNameStatic,
 	}
 
 	for _, opt := range opts {
