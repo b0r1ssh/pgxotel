@@ -43,6 +43,13 @@ func setupFixture(t *testing.T, opts ...pgxotel.Option) (*trace.TracerProvider, 
 func TestTraceConnect(t *testing.T) {
 	t.Parallel()
 
+	t.Run("without recording span", func(t *testing.T) {
+		t.Parallel()
+
+		tracer := pgxotel.NewTracer()
+		tracer.TraceConnectStart(context.Background(), pgx.TraceConnectStartData{})
+	})
+
 	t.Run("without error", func(t *testing.T) {
 		t.Parallel()
 
@@ -129,6 +136,13 @@ func TestTraceConnect(t *testing.T) {
 
 func TestTraceAcquire(t *testing.T) {
 	t.Parallel()
+
+	t.Run("without recording span", func(t *testing.T) {
+		t.Parallel()
+
+		tracer := pgxotel.NewTracer()
+		tracer.TraceAcquireStart(context.Background(), nil, pgxpool.TraceAcquireStartData{})
+	})
 
 	t.Run("without error", func(t *testing.T) {
 		t.Parallel()
@@ -218,6 +232,22 @@ func TestTraceAcquire(t *testing.T) {
 func TestTraceBatch(t *testing.T) {
 	t.Parallel()
 
+	t.Run("without recording span", func(t *testing.T) {
+		t.Parallel()
+
+		tracer := pgxotel.NewTracer()
+		tracer.TraceBatchQuery(context.Background(), nil, pgx.TraceBatchQueryData{
+			SQL: "SELECT $1::int",
+		})
+	})
+
+	t.Run("batch start without recording span", func(t *testing.T) {
+		t.Parallel()
+
+		tracer := pgxotel.NewTracer()
+		tracer.TraceBatchStart(context.Background(), nil, pgx.TraceBatchStartData{})
+	})
+
 	t.Run("without error", func(t *testing.T) {
 		t.Parallel()
 
@@ -303,6 +333,13 @@ func TestTraceBatch(t *testing.T) {
 func TestTracePrepare(t *testing.T) {
 	t.Parallel()
 
+	t.Run("without recording span", func(t *testing.T) {
+		t.Parallel()
+
+		tracer := pgxotel.NewTracer()
+		tracer.TracePrepareStart(context.Background(), nil, pgx.TracePrepareStartData{})
+	})
+
 	t.Run("without error", func(t *testing.T) {
 		t.Parallel()
 
@@ -374,6 +411,13 @@ func TestTracePrepare(t *testing.T) {
 
 func TestTraceCopyFrom(t *testing.T) {
 	t.Parallel()
+
+	t.Run("without recording span", func(t *testing.T) {
+		t.Parallel()
+
+		tracer := pgxotel.NewTracer()
+		tracer.TraceCopyFromStart(context.Background(), nil, pgx.TraceCopyFromStartData{})
+	})
 
 	t.Run("without error", func(t *testing.T) {
 		t.Parallel()
@@ -528,6 +572,122 @@ func TestTraceQuery(t *testing.T) {
 			t.Fatalf("unexpected status code: got %v want %v", span.Status.Code, codes.Error)
 		}
 	})
+
+	t.Run("with trimmed query comments", func(t *testing.T) {
+		t.Parallel()
+
+		tp, exporter, config := setupFixture(t,
+			pgxotel.WithTrimQueryComments(true),
+			pgxotel.WithQueryParameters(true),
+		)
+		rootCtx, rootSpan := tp.Tracer("tracer").Start(t.Context(), "root")
+		t.Cleanup(func() { rootSpan.End() })
+
+		conn, err := pgx.ConnectConfig(rootCtx, config)
+		if err != nil {
+			t.Fatalf("connect to postgres: %v", err)
+		}
+		t.Cleanup(func() { _ = conn.Close(context.Background()) })
+
+		_, err = conn.Exec(rootCtx, "SELECT /* comment */ $1::int", 42)
+		if err != nil {
+			t.Fatalf("execute query: %v", err)
+		}
+		span, err := getSpanByName(exporter.GetSpans(), "db.query", map[string]any{
+			"db.system.name":            "postgresql",
+			"server.address":            "localhost",
+			"server.port":               5432,
+			"user.name":                 "pgxotel",
+			"db.namespace":              "pgxotel",
+			"db.query.text":             "SELECT $1::int",
+			"db.query.parameter.1":      "42",
+			"db.operation.name":         "SELECT",
+			"db.response.returned_rows": 1,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if span.Status.Code != codes.Ok {
+			t.Fatalf("unexpected status code: got %v want %v", span.Status.Code, codes.Ok)
+		}
+
+		exporter.Reset()
+
+		_, err = conn.Exec(rootCtx, "-- name: GetOne :one\nSELECT $1::int", 42)
+		if err != nil {
+			t.Fatalf("execute sqlc query: %v", err)
+		}
+		span, err = getSpanByName(exporter.GetSpans(), "db.query", map[string]any{
+			"db.system.name":            "postgresql",
+			"server.address":            "localhost",
+			"server.port":               5432,
+			"user.name":                 "pgxotel",
+			"db.namespace":              "pgxotel",
+			"db.query.text":             "SELECT $1::int",
+			"db.query.parameter.1":      "42",
+			"db.operation.name":         "SELECT",
+			"db.response.returned_rows": 1,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if span.Status.Code != codes.Ok {
+			t.Fatalf("unexpected status code: got %v want %v", span.Status.Code, codes.Ok)
+		}
+
+		exporter.Reset()
+
+		_, err = conn.Exec(rootCtx, "SELECT $1::int -- trailing comment", 42)
+		if err != nil {
+			t.Fatalf("execute trailing-comment query: %v", err)
+		}
+		span, err = getSpanByName(exporter.GetSpans(), "db.query", map[string]any{
+			"db.system.name":            "postgresql",
+			"server.address":            "localhost",
+			"server.port":               5432,
+			"user.name":                 "pgxotel",
+			"db.namespace":              "pgxotel",
+			"db.query.text":             "SELECT $1::int",
+			"db.query.parameter.1":      "42",
+			"db.operation.name":         "SELECT",
+			"db.response.returned_rows": 1,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if span.Status.Code != codes.Ok {
+			t.Fatalf("unexpected status code: got %v want %v", span.Status.Code, codes.Ok)
+		}
+
+		exporter.Reset()
+
+		_, err = conn.Exec(rootCtx, `SELECT $1::int
+/*
+ * Author: b0r1sh
+ * Purpose: To show a comment that spans multiple lines in your SQL
+ * statement in PostgreSQL.
+ */`, 42)
+		if err != nil {
+			t.Fatalf("execute multiline-comment query: %v", err)
+		}
+		span, err = getSpanByName(exporter.GetSpans(), "db.query", map[string]any{
+			"db.system.name":            "postgresql",
+			"server.address":            "localhost",
+			"server.port":               5432,
+			"user.name":                 "pgxotel",
+			"db.namespace":              "pgxotel",
+			"db.query.text":             "SELECT $1::int",
+			"db.query.parameter.1":      "42",
+			"db.operation.name":         "SELECT",
+			"db.response.returned_rows": 1,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if span.Status.Code != codes.Ok {
+			t.Fatalf("unexpected status code: got %v want %v", span.Status.Code, codes.Ok)
+		}
+	})
 }
 
 func getSpanByName(spans tracetest.SpanStubs, name string, wantAttributes map[string]any) (tracetest.SpanStub, error) {
@@ -574,7 +734,6 @@ func attributeValueEqual(got attribute.Value, want any) bool {
 		return got.Type() == attribute.INT64 && got.AsInt64() == int64(w)
 	case float64:
 		return got.Type() == attribute.FLOAT64 && got.AsFloat64() == w
-	default:
-		return false
 	}
+	return false
 }

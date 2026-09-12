@@ -45,6 +45,7 @@ type Tracer struct {
 	attributes          []attribute.KeyValue
 	captureQueryParams  bool
 	captureNetworkAttrs bool
+	trimQueryComments   bool
 }
 
 func NewTracer(opts ...Option) *Tracer {
@@ -57,6 +58,7 @@ func NewTracer(opts ...Option) *Tracer {
 		attributes:          o.attributes,
 		captureQueryParams:  o.captureQueryParams,
 		captureNetworkAttrs: o.captureNetworkAttrs,
+		trimQueryComments:   o.trimQueryComments,
 	}
 }
 
@@ -173,7 +175,7 @@ func (t *Tracer) TracePrepareStart(ctx context.Context, conn *pgx.Conn, data pgx
 	}
 
 	attrs := append(t.attributes, connectionAttributesFromPgxConfig(conn.Config())...)
-	attrs = append(attrs, semconv.DBQueryText(data.SQL))
+	attrs = append(attrs, queryAttributeFromQuery(data.SQL, t.trimQueryComments))
 
 	spanCtx, _ := t.tracer.Start(ctx, spanPrepare,
 		trace.WithSpanKind(trace.SpanKindClient),
@@ -250,7 +252,7 @@ func (t *Tracer) TraceBatchQuery(ctx context.Context, conn *pgx.Conn, data pgx.T
 	attrs := append(t.attributes, connectionAttributesFromPgxConfig(conn.Config())...)
 	attrs = append(attrs, operationAttributeFromCommandTag(data.CommandTag))
 	attrs = append(attrs, retunredRowsAttributeFromCommandTag(data.CommandTag))
-	attrs = append(attrs, semconv.DBQueryText(data.SQL))
+	attrs = append(attrs, queryAttributeFromQuery(data.SQL, t.trimQueryComments))
 
 	if t.captureQueryParams {
 		attrs = append(attrs, queryParameterAttributesFromArgs(data.Args)...)
@@ -266,7 +268,7 @@ func (t *Tracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.T
 	}
 
 	attrs := append(t.attributes, connectionAttributesFromPgxConfig(conn.Config())...)
-	attrs = append(attrs, semconv.DBQueryText(data.SQL))
+	attrs = append(attrs, queryAttributeFromQuery(data.SQL, t.trimQueryComments))
 
 	if t.captureQueryParams {
 		attrs = append(attrs, queryParameterAttributesFromArgs(data.Args)...)
@@ -362,6 +364,58 @@ func networkPeerAttributesFromConn(conn *pgx.Conn) []attribute.KeyValue {
 	}
 
 	return attrs
+}
+
+func queryAttributeFromQuery(query string, trim bool) attribute.KeyValue {
+	queryText := strings.TrimSpace(query)
+
+	if trim {
+		queryText = stripSQLComments(query)
+	}
+
+	return semconv.DBQueryText(queryText)
+}
+
+func stripSQLComments(sql string) string {
+	var builder strings.Builder
+	builder.Grow(len(sql))
+
+	for index := 0; index < len(sql); {
+		switch {
+		case strings.HasPrefix(sql[index:], "--"):
+			index += 2
+			for index < len(sql) && sql[index] != '\n' && sql[index] != '\r' {
+				index++
+			}
+		case strings.HasPrefix(sql[index:], "/*"):
+			index = skipBlockComment(sql, index)
+		default:
+			builder.WriteByte(sql[index])
+			index++
+		}
+	}
+
+	return strings.Join(strings.Fields(strings.TrimSpace(builder.String())), " ")
+}
+
+func skipBlockComment(sql string, index int) int {
+	depth := 0
+	for index < len(sql) {
+		switch {
+		case strings.HasPrefix(sql[index:], "/*"):
+			depth++
+			index += 2
+		case strings.HasPrefix(sql[index:], "*/"):
+			depth--
+			index += 2
+			if depth == 0 {
+				return index
+			}
+		default:
+			index++
+		}
+	}
+	return index
 }
 
 func operationAttributeFromCommandTag(tag pgconn.CommandTag) attribute.KeyValue {

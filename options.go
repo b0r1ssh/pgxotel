@@ -11,6 +11,7 @@ type options struct {
 	attributes          []attribute.KeyValue
 	captureQueryParams  bool
 	captureNetworkAttrs bool
+	trimQueryComments   bool
 }
 
 type Option interface {
@@ -64,12 +65,24 @@ func WithNetworkAttributes(enabled bool) Option {
 	return captureNetworkAttributesOption(enabled)
 }
 
+type trimQueryCommentsOption bool
+
+func (q trimQueryCommentsOption) apply(opts *options) {
+	opts.trimQueryComments = bool(q)
+}
+
+// WithTrimQueryComments controls whether SQL comments are kept in db.query.text.
+func WithTrimQueryComments(enabled bool) Option {
+	return trimQueryCommentsOption(enabled)
+}
+
 func newOptions(opts ...Option) *options {
 	o := &options{
 		tracerProvider:      otel.GetTracerProvider(),
 		attributes:          make([]attribute.KeyValue, 0),
 		captureQueryParams:  false,
 		captureNetworkAttrs: false,
+		trimQueryComments:   false,
 	}
 
 	for _, opt := range opts {

@@ -3,8 +3,8 @@ module github.com/b0r1sh/pgxotel
 go 1.25.0
 
 require (
-	github.com/b0r1ssh/pgcode v0.0.2
-	github.com/jackc/pgx/v5 v5.10.0
+	github.com/b0r1ssh/pgcode v0.0.4
+	github.com/jackc/pgx/v5 v5.11.0
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/sdk v1.46.0
 	go.opentelemetry.io/otel/trace v1.46.0
