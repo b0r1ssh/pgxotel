@@ -1,5 +1,9 @@
 # pgxotel
 
+[![CI](https://github.com/b0r1ssh/pgxotel/actions/workflows/go-test.yml/badge.svg)](https://github.com/b0r1ssh/pgxotel/actions/workflows/go-test.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/b0r1ssh/pgxotel.svg)](https://pkg.go.dev/github.com/b0r1ssh/pgxotel)
+[![codecov](https://codecov.io/gh/b0r1ssh/pgxotel/graph/badge.svg?token=7ZA7WM97TV)](https://codecov.io/gh/b0r1ssh/pgxotel)
+
 ## Release workflow for contributors
 
 Merging a pull request into `main` automatically creates a Git tag and a
