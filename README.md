@@ -18,3 +18,7 @@ semantic version increment:
 When no release label is present, the workflow uses `patch`. Do not combine
 `patch`, `minor`, and `major` labels on one pull request; the release workflow
 will fail if more than one is present.
+
+Use the `skip-release` label for documentation, CI, or other changes that do
+not need a new module version. When a pull request with this label is merged,
+the publish workflow skips the release entirely.
