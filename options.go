@@ -60,7 +60,7 @@ func (c captureNetworkAttributesOption) apply(opts *options) {
 	opts.captureNetworkAttrs = bool(c)
 }
 
-// WithNetworkAttributes enables network.peer.* attributes on connection spans.
+// WithNetworkAttributes enables network peer and local attributes on connection and database operation spans.
 func WithNetworkAttributes(enabled bool) Option {
 	return captureNetworkAttributesOption(enabled)
 }

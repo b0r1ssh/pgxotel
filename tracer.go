@@ -20,7 +20,7 @@ import (
 
 const (
 	ScopeName = "github.com/b0r1sh/pgxotel"
-	Version   = "0.1.0"
+	Version   = "0.2.0"
 
 	spanConnect = "db.connect"
 	spanAcquire = "db.pool.acquire"
@@ -90,7 +90,7 @@ func (t *Tracer) TraceConnectEnd(ctx context.Context, data pgx.TraceConnectEndDa
 	if data.Err != nil {
 		span.RecordError(data.Err)
 		span.SetStatus(codes.Error, data.Err.Error())
-		span.SetAttributes(semconv.ErrorTypeKey.String(pgErrType(data.Err)))
+		span.SetAttributes(errorAttributes(data.Err)...)
 	} else {
 		if t.captureNetworkAttrs {
 			span.SetAttributes(networkPeerAttributesFromConn(data.Conn)...)
@@ -127,7 +127,7 @@ func (t *Tracer) TraceAcquireEnd(ctx context.Context, pool *pgxpool.Pool, data p
 	if data.Err != nil {
 		span.RecordError(data.Err)
 		span.SetStatus(codes.Error, data.Err.Error())
-		span.SetAttributes(semconv.ErrorTypeKey.String(pgErrType(data.Err)))
+		span.SetAttributes(errorAttributes(data.Err)...)
 	} else {
 		span.SetStatus(codes.Ok, "")
 	}
@@ -140,6 +140,9 @@ func (t *Tracer) TraceCopyFromStart(ctx context.Context, conn *pgx.Conn, data pg
 	}
 
 	attrs := append(t.attributes, connectionAttributesFromPgxConfig(conn.Config())...)
+	if t.captureNetworkAttrs {
+		attrs = append(attrs, networkPeerAttributesFromConn(conn)...)
+	}
 	attrs = append(attrs, collectAttributeFrom(data.TableName))
 
 	spanCtx, _ := t.tracer.Start(ctx, spanCopy,
@@ -162,7 +165,7 @@ func (t *Tracer) TraceCopyFromEnd(ctx context.Context, conn *pgx.Conn, data pgx.
 	if data.Err != nil {
 		span.RecordError(data.Err)
 		span.SetStatus(codes.Error, data.Err.Error())
-		span.SetAttributes(semconv.ErrorTypeKey.String(pgErrType(data.Err)))
+		span.SetAttributes(errorAttributes(data.Err)...)
 	} else {
 		span.SetStatus(codes.Ok, "")
 	}
@@ -175,6 +178,9 @@ func (t *Tracer) TracePrepareStart(ctx context.Context, conn *pgx.Conn, data pgx
 	}
 
 	attrs := append(t.attributes, connectionAttributesFromPgxConfig(conn.Config())...)
+	if t.captureNetworkAttrs {
+		attrs = append(attrs, networkPeerAttributesFromConn(conn)...)
+	}
 	attrs = append(attrs, queryAttributeFromQuery(data.SQL, t.trimQueryComments))
 
 	spanCtx, _ := t.tracer.Start(ctx, spanPrepare,
@@ -197,7 +203,7 @@ func (t *Tracer) TracePrepareEnd(ctx context.Context, conn *pgx.Conn, data pgx.T
 	if data.Err != nil {
 		span.RecordError(data.Err)
 		span.SetStatus(codes.Error, data.Err.Error())
-		span.SetAttributes(semconv.ErrorTypeKey.String(pgErrType(data.Err)))
+		span.SetAttributes(errorAttributes(data.Err)...)
 	} else {
 		span.SetStatus(codes.Ok, "")
 	}
@@ -210,6 +216,9 @@ func (t *Tracer) TraceBatchStart(ctx context.Context, conn *pgx.Conn, data pgx.T
 	}
 
 	attrs := append(t.attributes, connectionAttributesFromPgxConfig(conn.Config())...)
+	if t.captureNetworkAttrs {
+		attrs = append(attrs, networkPeerAttributesFromConn(conn)...)
+	}
 
 	size := 0
 	if b := data.Batch; b != nil {
@@ -237,7 +246,7 @@ func (t *Tracer) TraceBatchEnd(ctx context.Context, conn *pgx.Conn, data pgx.Tra
 	if data.Err != nil {
 		span.RecordError(data.Err)
 		span.SetStatus(codes.Error, data.Err.Error())
-		span.SetAttributes(semconv.ErrorTypeKey.String(pgErrType(data.Err)))
+		span.SetAttributes(errorAttributes(data.Err)...)
 	} else {
 		span.SetStatus(codes.Ok, "")
 	}
@@ -268,6 +277,9 @@ func (t *Tracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.T
 	}
 
 	attrs := append(t.attributes, connectionAttributesFromPgxConfig(conn.Config())...)
+	if t.captureNetworkAttrs {
+		attrs = append(attrs, networkPeerAttributesFromConn(conn)...)
+	}
 	attrs = append(attrs, queryAttributeFromQuery(data.SQL, t.trimQueryComments))
 
 	if t.captureQueryParams {
@@ -297,7 +309,7 @@ func (t *Tracer) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, data pgx.Tra
 	if data.Err != nil {
 		span.RecordError(data.Err)
 		span.SetStatus(codes.Error, data.Err.Error())
-		span.SetAttributes(semconv.ErrorTypeKey.String(pgErrType(data.Err)))
+		span.SetAttributes(errorAttributes(data.Err)...)
 	} else {
 		span.SetStatus(codes.Ok, "")
 	}
@@ -445,7 +457,7 @@ func queryParameterAttributesFromArgs(args []any) []attribute.KeyValue {
 	attrs := make([]attribute.KeyValue, 0, len(args))
 
 	for i, arg := range args {
-		key := strconv.Itoa(i + 1)
+		key := strconv.Itoa(i)
 		attrs = append(attrs, semconv.DBQueryParameter(key, fmt.Sprintf("%v", arg)))
 	}
 
@@ -458,6 +470,14 @@ func pgErrDetails(err error) *pgconn.PgError {
 		return pgErr
 	}
 	return nil
+}
+
+func errorAttributes(err error) []attribute.KeyValue {
+	attrs := []attribute.KeyValue{semconv.ErrorTypeKey.String(pgErrType(err))}
+	if pgErr := pgErrDetails(err); pgErr != nil {
+		attrs = append(attrs, semconv.DBResponseStatusCode(pgErr.Code))
+	}
+	return attrs
 }
 
 func pgErrType(err error) string {

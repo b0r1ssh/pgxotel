@@ -132,7 +132,7 @@ Pass options to `pgxotel.NewTracer`. All options are optional.
 | `WithTracerProvider(provider)` | Global OpenTelemetry tracer provider | Uses the supplied provider to create pgx spans. This is useful when the provider is not registered globally. |
 | `WithAttributes(attrs...)` | No additional attributes | Adds the attributes to every span created by the tracer. Multiple calls accumulate attributes. |
 | `WithQueryParameters(enabled)` | `false` | Records query arguments as `db.query.parameter.<index>` attributes. Enable only after reviewing the risk of exposing credentials, personal data, or other sensitive values. |
-| `WithNetworkAttributes(enabled)` | `false` | Adds network peer and local address attributes to successful connection spans. |
+| `WithNetworkAttributes(enabled)` | `false` | Adds network peer and local address attributes to connection and database operation spans. |
 | `WithTrimQueryComments(enabled)` | `false` | Removes line and block comments from `db.query.text` when enabled. The remaining SQL whitespace is normalized. |
 
 For example, query parameter capture must be explicitly enabled:
