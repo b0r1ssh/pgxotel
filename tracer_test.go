@@ -281,7 +281,7 @@ func TestTraceBatch(t *testing.T) {
 			"db.operation.name":         "SELECT",
 			"db.response.returned_rows": 1,
 			"db.query.text":             "SELECT $1::int",
-			"db.query.parameter.1":      "42",
+			"db.query.parameter.0":      "42",
 			"test.attribute":            "batch",
 		})
 		if err != nil {
@@ -319,6 +319,7 @@ func TestTraceBatch(t *testing.T) {
 			"user.name":               "pgxotel",
 			"db.namespace":            "pgxotel",
 			"db.operation.batch.size": 1,
+			"db.response.status_code": "42P01",
 			"error.type":              "UndefinedTable",
 		})
 		if err != nil {
@@ -392,13 +393,14 @@ func TestTracePrepare(t *testing.T) {
 		}
 
 		span, err := getSpanByName(exporter.GetSpans(), "db.prepare", map[string]any{
-			"db.system.name": "postgresql",
-			"server.address": "localhost",
-			"server.port":    5432,
-			"user.name":      "pgxotel",
-			"db.namespace":   "pgxotel",
-			"db.query.text":  "SELECT * FROM missing_table",
-			"error.type":     "UndefinedTable",
+			"db.system.name":          "postgresql",
+			"server.address":          "localhost",
+			"server.port":             5432,
+			"user.name":               "pgxotel",
+			"db.namespace":            "pgxotel",
+			"db.query.text":           "SELECT * FROM missing_table",
+			"db.response.status_code": "42P01",
+			"error.type":              "UndefinedTable",
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -477,13 +479,14 @@ func TestTraceCopyFrom(t *testing.T) {
 		}
 
 		span, err := getSpanByName(exporter.GetSpans(), "db.copy", map[string]any{
-			"db.system.name":     "postgresql",
-			"server.address":     "localhost",
-			"server.port":        5432,
-			"user.name":          "pgxotel",
-			"db.namespace":       "pgxotel",
-			"db.collection.name": "trace_copy_error",
-			"error.type":         "QueryCanceled",
+			"db.system.name":          "postgresql",
+			"server.address":          "localhost",
+			"server.port":             5432,
+			"user.name":               "pgxotel",
+			"db.namespace":            "pgxotel",
+			"db.collection.name":      "trace_copy_error",
+			"db.response.status_code": "57014",
+			"error.type":              "QueryCanceled",
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -502,6 +505,7 @@ func TestTraceQuery(t *testing.T) {
 
 		tp, exporter, config := setupFixture(t,
 			pgxotel.WithQueryParameters(true),
+			pgxotel.WithNetworkAttributes(true),
 			pgxotel.WithAttributes(attribute.String("test.attribute", "query")),
 		)
 		rootCtx, rootSpan := tp.Tracer("tracer").Start(t.Context(), "root")
@@ -512,6 +516,19 @@ func TestTraceQuery(t *testing.T) {
 			t.Fatalf("connect to postgres: %v", err)
 		}
 		t.Cleanup(func() { _ = conn.Close(context.Background()) })
+
+		remoteAddr, ok := conn.PgConn().Conn().RemoteAddr().(*net.TCPAddr)
+		if !ok {
+			t.Fatalf("expected TCP remote address, got %T", conn.PgConn().Conn().RemoteAddr())
+		}
+		localAddr, ok := conn.PgConn().Conn().LocalAddr().(*net.TCPAddr)
+		if !ok {
+			t.Fatalf("expected TCP local address, got %T", conn.PgConn().Conn().LocalAddr())
+		}
+		networkType := "ipv6"
+		if remoteAddr.IP.To4() != nil {
+			networkType = "ipv4"
+		}
 
 		if _, err := conn.Exec(rootCtx, "SELECT $1::int", 42); err != nil {
 			t.Fatalf("execute query: %v", err)
@@ -524,10 +541,16 @@ func TestTraceQuery(t *testing.T) {
 			"user.name":                 "pgxotel",
 			"db.namespace":              "pgxotel",
 			"db.query.text":             "SELECT $1::int",
-			"db.query.parameter.1":      "42",
+			"db.query.parameter.0":      "42",
 			"test.attribute":            "query",
 			"db.operation.name":         "SELECT",
 			"db.response.returned_rows": 1,
+			"network.transport":         "tcp",
+			"network.peer.address":      remoteAddr.IP.String(),
+			"network.peer.port":         remoteAddr.Port,
+			"network.type":              networkType,
+			"network.local.address":     localAddr.IP.String(),
+			"network.local.port":        localAddr.Port,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -563,6 +586,7 @@ func TestTraceQuery(t *testing.T) {
 			"db.query.text":             "SELECT * FROM missing_table",
 			"db.operation.name":         "",
 			"db.response.returned_rows": 0,
+			"db.response.status_code":   "42P01",
 			"error.type":                "UndefinedTable",
 		})
 		if err != nil {
@@ -600,7 +624,7 @@ func TestTraceQuery(t *testing.T) {
 			"user.name":                 "pgxotel",
 			"db.namespace":              "pgxotel",
 			"db.query.text":             "SELECT $1::int",
-			"db.query.parameter.1":      "42",
+			"db.query.parameter.0":      "42",
 			"db.operation.name":         "SELECT",
 			"db.response.returned_rows": 1,
 		})
@@ -624,7 +648,7 @@ func TestTraceQuery(t *testing.T) {
 			"user.name":                 "pgxotel",
 			"db.namespace":              "pgxotel",
 			"db.query.text":             "SELECT $1::int",
-			"db.query.parameter.1":      "42",
+			"db.query.parameter.0":      "42",
 			"db.operation.name":         "SELECT",
 			"db.response.returned_rows": 1,
 		})
@@ -648,7 +672,7 @@ func TestTraceQuery(t *testing.T) {
 			"user.name":                 "pgxotel",
 			"db.namespace":              "pgxotel",
 			"db.query.text":             "SELECT $1::int",
-			"db.query.parameter.1":      "42",
+			"db.query.parameter.0":      "42",
 			"db.operation.name":         "SELECT",
 			"db.response.returned_rows": 1,
 		})
@@ -677,7 +701,7 @@ func TestTraceQuery(t *testing.T) {
 			"user.name":                 "pgxotel",
 			"db.namespace":              "pgxotel",
 			"db.query.text":             "SELECT $1::int",
-			"db.query.parameter.1":      "42",
+			"db.query.parameter.0":      "42",
 			"db.operation.name":         "SELECT",
 			"db.response.returned_rows": 1,
 		})
