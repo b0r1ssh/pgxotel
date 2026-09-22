@@ -7,6 +7,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/b0r1ssh/pgcode"
 	"github.com/jackc/pgx/v5"
@@ -20,7 +21,7 @@ import (
 
 const (
 	ScopeName = "github.com/b0r1sh/pgxotel"
-	Version   = "1.0.2"
+	Version   = "1.1.1"
 
 	spanConnect = "db.connect"
 	spanAcquire = "db.pool.acquire"
@@ -46,6 +47,7 @@ type Tracer struct {
 	captureQueryParams  bool
 	captureNetworkAttrs bool
 	trimQueryComments   bool
+	semanticSpanNames   bool
 }
 
 func NewTracer(opts ...Option) *Tracer {
@@ -59,6 +61,7 @@ func NewTracer(opts ...Option) *Tracer {
 		captureQueryParams:  o.captureQueryParams,
 		captureNetworkAttrs: o.captureNetworkAttrs,
 		trimQueryComments:   o.trimQueryComments,
+		semanticSpanNames:   o.semanticSpanNames,
 	}
 }
 
@@ -145,7 +148,7 @@ func (t *Tracer) TraceCopyFromStart(ctx context.Context, conn *pgx.Conn, data pg
 	}
 	attrs = append(attrs, collectAttributeFrom(data.TableName))
 
-	spanCtx, _ := t.tracer.Start(ctx, spanCopy,
+	spanCtx, _ := t.tracer.Start(ctx, t.copySpanName(data.TableName),
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(attrs...),
 	)
@@ -183,7 +186,7 @@ func (t *Tracer) TracePrepareStart(ctx context.Context, conn *pgx.Conn, data pgx
 	}
 	attrs = append(attrs, queryAttributeFromQuery(data.SQL, t.trimQueryComments))
 
-	spanCtx, _ := t.tracer.Start(ctx, spanPrepare,
+	spanCtx, _ := t.tracer.Start(ctx, t.querySpanName(spanPrepare, data.SQL),
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(attrs...),
 	)
@@ -226,7 +229,12 @@ func (t *Tracer) TraceBatchStart(ctx context.Context, conn *pgx.Conn, data pgx.T
 	}
 	attrs = append(attrs, semconv.DBOperationBatchSize(size))
 
-	spanCtx, _ := t.tracer.Start(ctx, spanBatch,
+	name := spanBatch
+	if t.semanticSpanNames {
+		name = "BATCH"
+	}
+
+	spanCtx, _ := t.tracer.Start(ctx, name,
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(attrs...),
 	)
@@ -282,7 +290,7 @@ func (t *Tracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.T
 		attrs = append(attrs, queryParameterAttributesFromArgs(data.Args)...)
 	}
 
-	spanCtx, _ := t.tracer.Start(ctx, spanQuery,
+	spanCtx, _ := t.tracer.Start(ctx, t.querySpanName(spanQuery, data.SQL),
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(attrs...),
 	)
@@ -490,6 +498,75 @@ func operationAttributeFromCommandTag(tag pgconn.CommandTag) attribute.KeyValue 
 	}
 
 	return semconv.DBOperationName(strings.ToUpper(tag.String()))
+}
+
+// sqlKeywords are the leading tokens recognized as a SQL operation name for span naming.
+var sqlKeywords = map[string]struct{}{
+	"SELECT": {}, "INSERT": {}, "UPDATE": {}, "DELETE": {}, "MERGE": {},
+	"WITH": {}, "CREATE": {}, "ALTER": {}, "DROP": {}, "TRUNCATE": {},
+	"BEGIN": {}, "COMMIT": {}, "ROLLBACK": {}, "SAVEPOINT": {},
+	"EXPLAIN": {}, "VACUUM": {}, "ANALYZE": {}, "GRANT": {}, "REVOKE": {},
+	"CALL": {}, "DECLARE": {}, "FETCH": {}, "COPY": {}, "SET": {},
+	"SHOW": {}, "RESET": {}, "LOCK": {}, "REFRESH": {}, "COMMENT": {},
+	"PREPARE": {}, "EXECUTE": {}, "DEALLOCATE": {}, "LISTEN": {}, "NOTIFY": {},
+}
+
+// sqlOperationName extracts the leading SQL keyword (e.g. "SELECT"), skipping
+// leading whitespace and comments. Returns "" if no known keyword is found.
+func sqlOperationName(sql string) string {
+	trimmed := strings.TrimSpace(sql)
+
+	for {
+		switch {
+		case strings.HasPrefix(trimmed, "--"):
+			if idx := strings.IndexAny(trimmed, "\n\r"); idx >= 0 {
+				trimmed = strings.TrimSpace(trimmed[idx+1:])
+				continue
+			}
+			return ""
+		case strings.HasPrefix(trimmed, "/*"):
+			end := skipBlockComment(trimmed, 0)
+			trimmed = strings.TrimSpace(trimmed[end:])
+			continue
+		}
+		break
+	}
+
+	end := strings.IndexFunc(trimmed, func(r rune) bool { return !unicode.IsLetter(r) })
+	word := trimmed
+	if end >= 0 {
+		word = trimmed[:end]
+	}
+	word = strings.ToUpper(word)
+
+	if _, ok := sqlKeywords[word]; ok {
+		return word
+	}
+	return ""
+}
+
+// querySpanName names the span "{operation}" per the OpenTelemetry database
+// semantic conventions when enabled, falling back to the static name otherwise.
+func (t *Tracer) querySpanName(fallback, sql string) string {
+	if !t.semanticSpanNames {
+		return fallback
+	}
+	if op := sqlOperationName(sql); op != "" {
+		return op
+	}
+	return fallback
+}
+
+// copySpanName names the span "COPY {table}" per the OpenTelemetry database
+// semantic conventions when enabled, falling back to the static name otherwise.
+func (t *Tracer) copySpanName(tableName pgx.Identifier) string {
+	if !t.semanticSpanNames {
+		return spanCopy
+	}
+	if table := strings.Join(tableName, "."); table != "" {
+		return "COPY " + table
+	}
+	return "COPY"
 }
 
 func retunredRowsAttributeFromCommandTag(tag pgconn.CommandTag) attribute.KeyValue {

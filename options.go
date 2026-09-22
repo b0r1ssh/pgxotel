@@ -12,6 +12,7 @@ type options struct {
 	captureQueryParams  bool
 	captureNetworkAttrs bool
 	trimQueryComments   bool
+	semanticSpanNames   bool
 }
 
 type Option interface {
@@ -78,6 +79,19 @@ func WithTrimQueryComments(enabled bool) Option {
 	return trimQueryCommentsOption(enabled)
 }
 
+type semanticSpanNamesOption bool
+
+func (s semanticSpanNamesOption) apply(opts *options) {
+	opts.semanticSpanNames = bool(s)
+}
+
+// WithSemanticSpanNames names query/prepare/copy spans as "{db.operation.name} {target}"
+// per the OpenTelemetry database semantic conventions instead of the fixed
+// "db.query"/"db.prepare"/"db.copy" names. Disabled by default for backward compatibility.
+func WithSemanticSpanNames(enabled bool) Option {
+	return semanticSpanNamesOption(enabled)
+}
+
 func newOptions(opts ...Option) *options {
 	o := &options{
 		tracerProvider:      otel.GetTracerProvider(),
@@ -85,6 +99,7 @@ func newOptions(opts ...Option) *options {
 		captureQueryParams:  false,
 		captureNetworkAttrs: false,
 		trimQueryComments:   false,
+		semanticSpanNames:   false,
 	}
 
 	for _, opt := range opts {
