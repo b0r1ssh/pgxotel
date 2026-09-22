@@ -17,6 +17,7 @@ with the instrumentation version reported by this module.
 - OpenTelemetry semantic conventions for PostgreSQL span attributes
 - PostgreSQL SQLSTATE error names and span status recording
 - Optional query parameter, network attribute, and SQL comment controls
+- Optional span names that follow the database semantic conventions
 - Custom tracer providers and attributes
 
 ## OpenTelemetry conventions
@@ -53,6 +54,13 @@ PostgreSQL provides them. For non-PostgreSQL errors (connection failures,
 context cancellation, and similar), `error.type` is the Go type of the
 innermost wrapped error (for example `*net.OpError`) rather than the error
 message, keeping the attribute low-cardinality as the conventions require.
+
+Span names default to fixed values (`db.query`, `db.prepare`, `db.copy`,
+`db.batch`, `db.connect`, `db.pool.acquire`). Enabling `WithSemanticSpanNames`
+names query, prepare, and copy spans `{db.operation.name}` (for example
+`SELECT`), or `COPY {db.collection.name}` for copies, falling back to the
+fixed name when the operation can't be determined from the SQL text. Batch
+spans are named `BATCH`, since a batch can contain multiple operations.
 
 ## Installation
 
@@ -171,6 +179,7 @@ Pass options to `pgxotel.NewTracer`. All options are optional.
 | `WithQueryParameters(enabled)` | `false` | Records query arguments as `db.query.parameter.<index>` attributes. Enable only after reviewing the risk of exposing credentials, personal data, or other sensitive values. |
 | `WithNetworkAttributes(enabled)` | `false` | Adds network peer and local address attributes to connection and database operation spans. |
 | `WithTrimQueryComments(enabled)` | `false` | Removes line and block comments from `db.query.text` when enabled. The remaining SQL whitespace is normalized. |
+| `WithSemanticSpanNames(enabled)` | `false` | Names query, prepare, copy, and batch spans per the OpenTelemetry database semantic conventions instead of the fixed `db.query`/`db.prepare`/`db.copy`/`db.batch` names. |
 
 Query text is captured by default. Parameterized SQL text is generally safe to
 capture because values remain separate, but this package does not sanitize
@@ -218,8 +227,9 @@ recording span.
 - Requires Go 1.25 or newer and pgx v5.
 - This package provides tracing instrumentation only; it does not provide
 	OpenTelemetry metrics for PostgreSQL client operations.
-- It does not parse SQL to derive `db.query.summary` or extract table names
-	from query text.
+- `WithSemanticSpanNames` derives the span name from the leading SQL keyword
+	only; it does not parse SQL to derive a full `db.query.summary` or extract
+	table names from query text.
 - `db.namespace` reflects the schema active in `search_path` at connection
 	time only; it is not re-evaluated if the application changes the search
 	path later on the same connection.
@@ -241,8 +251,8 @@ steps would be:
 
 1. Add opt-in SQL literal sanitization, or make sanitized query text the
 	default for non-parameterized statements.
-2. Add low-cardinality `db.query.summary` generation and use it for span names
-	when it is available.
+2. Add low-cardinality `db.query.summary` generation and use it as the span
+	name target instead of the leading-keyword heuristic used today.
 3. Aggregate `db.operation.name` and `db.response.returned_rows` across all
 	items in a batch (for example `BATCH SELECT` when homogeneous, `BATCH`
 	otherwise, and a summed row count) instead of reporting only the last item.

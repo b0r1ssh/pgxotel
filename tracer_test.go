@@ -819,6 +819,182 @@ func TestTraceQuery(t *testing.T) {
 	})
 }
 
+func TestSemanticSpanNames(t *testing.T) {
+	t.Parallel()
+
+	t.Run("query is named after the operation", func(t *testing.T) {
+		t.Parallel()
+
+		tp, exporter, config := setupFixture(t, pgxotel.WithSemanticSpanNames(true))
+		rootCtx, rootSpan := tp.Tracer("tracer").Start(t.Context(), "root")
+		t.Cleanup(func() { rootSpan.End() })
+
+		conn, err := pgx.ConnectConfig(rootCtx, config)
+		if err != nil {
+			t.Fatalf("connect to postgres: %v", err)
+		}
+		t.Cleanup(func() { _ = conn.Close(context.Background()) })
+
+		if _, err := conn.Exec(rootCtx, "SELECT $1::int", pgx.QueryExecModeSimpleProtocol, 42); err != nil {
+			t.Fatalf("execute query: %v", err)
+		}
+
+		span, err := getSpanByName(exporter.GetSpans(), "SELECT", map[string]any{
+			"db.system.name":            "postgresql",
+			"server.address":            "localhost",
+			"server.port":               5432,
+			"user.name":                 "pgxotel",
+			"db.namespace":              "pgxotel",
+			"db.query.text":             "SELECT $1::int",
+			"db.operation.name":         "SELECT",
+			"db.response.returned_rows": 1,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if span.Status.Code != codes.Ok {
+			t.Fatalf("unexpected status code: got %v want %v", span.Status.Code, codes.Ok)
+		}
+	})
+
+	t.Run("query falls back to the static name for an unrecognized keyword", func(t *testing.T) {
+		t.Parallel()
+
+		tp, exporter, config := setupFixture(t, pgxotel.WithSemanticSpanNames(true))
+		rootCtx, rootSpan := tp.Tracer("tracer").Start(t.Context(), "root")
+		t.Cleanup(func() { rootSpan.End() })
+
+		conn, err := pgx.ConnectConfig(rootCtx, config)
+		if err != nil {
+			t.Fatalf("connect to postgres: %v", err)
+		}
+		t.Cleanup(func() { _ = conn.Close(context.Background()) })
+
+		if _, err := conn.Exec(rootCtx, "FOOBAR 1 2 3"); err == nil {
+			t.Fatal("expected syntax error")
+		}
+
+		found := false
+		for _, span := range exporter.GetSpans() {
+			if span.Name == "db.query" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected a span named %q, got spans: %v", "db.query", exporter.GetSpans())
+		}
+	})
+
+	t.Run("prepare is named after the operation", func(t *testing.T) {
+		t.Parallel()
+
+		tp, exporter, config := setupFixture(t, pgxotel.WithSemanticSpanNames(true))
+		rootCtx, rootSpan := tp.Tracer("tracer").Start(t.Context(), "root")
+		t.Cleanup(func() { rootSpan.End() })
+
+		conn, err := pgx.ConnectConfig(rootCtx, config)
+		if err != nil {
+			t.Fatalf("connect to postgres: %v", err)
+		}
+		t.Cleanup(func() { _ = conn.Close(context.Background()) })
+
+		if _, err := conn.Prepare(rootCtx, "trace_prepare_semantic", "SELECT $1::int"); err != nil {
+			t.Fatalf("prepare query: %v", err)
+		}
+
+		span, err := getSpanByName(exporter.GetSpans(), "SELECT", map[string]any{
+			"db.system.name": "postgresql",
+			"server.address": "localhost",
+			"server.port":    5432,
+			"user.name":      "pgxotel",
+			"db.namespace":   "pgxotel",
+			"db.query.text":  "SELECT $1::int",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if span.Status.Code != codes.Ok {
+			t.Fatalf("unexpected status code: got %v want %v", span.Status.Code, codes.Ok)
+		}
+	})
+
+	t.Run("copy is named after the table", func(t *testing.T) {
+		t.Parallel()
+
+		tp, exporter, config := setupFixture(t, pgxotel.WithSemanticSpanNames(true))
+		rootCtx, rootSpan := tp.Tracer("tracer").Start(t.Context(), "root")
+		t.Cleanup(func() { rootSpan.End() })
+
+		conn, err := pgx.ConnectConfig(rootCtx, config)
+		if err != nil {
+			t.Fatalf("connect to postgres: %v", err)
+		}
+		t.Cleanup(func() { _ = conn.Close(context.Background()) })
+
+		if _, err := conn.Exec(rootCtx, "CREATE TEMP TABLE trace_copy_semantic (value int)"); err != nil {
+			t.Fatalf("create temp table: %v", err)
+		}
+		if _, err := conn.CopyFrom(rootCtx, pgx.Identifier{"trace_copy_semantic"}, []string{"value"}, pgx.CopyFromRows([][]any{{1}})); err != nil {
+			t.Fatalf("copy rows: %v", err)
+		}
+
+		span, err := getSpanByName(exporter.GetSpans(), "COPY trace_copy_semantic", map[string]any{
+			"db.system.name":     "postgresql",
+			"server.address":     "localhost",
+			"server.port":        5432,
+			"user.name":          "pgxotel",
+			"db.namespace":       "pgxotel",
+			"db.collection.name": "trace_copy_semantic",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if span.Status.Code != codes.Ok {
+			t.Fatalf("unexpected status code: got %v want %v", span.Status.Code, codes.Ok)
+		}
+	})
+
+	t.Run("batch is named BATCH", func(t *testing.T) {
+		t.Parallel()
+
+		tp, exporter, config := setupFixture(t, pgxotel.WithSemanticSpanNames(true))
+		rootCtx, rootSpan := tp.Tracer("tracer").Start(t.Context(), "root")
+		t.Cleanup(func() { rootSpan.End() })
+
+		conn, err := pgx.ConnectConfig(rootCtx, config)
+		if err != nil {
+			t.Fatalf("connect to postgres: %v", err)
+		}
+		t.Cleanup(func() { _ = conn.Close(context.Background()) })
+
+		var batch pgx.Batch
+		batch.Queue("SELECT $1::int", 42)
+		results := conn.SendBatch(rootCtx, &batch)
+		if err := results.Close(); err != nil {
+			t.Fatalf("execute batch: %v", err)
+		}
+
+		span, err := getSpanByName(exporter.GetSpans(), "BATCH", map[string]any{
+			"db.system.name":            "postgresql",
+			"server.address":            "localhost",
+			"server.port":               5432,
+			"user.name":                 "pgxotel",
+			"db.namespace":              "pgxotel",
+			"db.operation.batch.size":   1,
+			"db.operation.name":         "SELECT",
+			"db.response.returned_rows": 1,
+			"db.query.text":             "SELECT $1::int",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if span.Status.Code != codes.Ok {
+			t.Fatalf("unexpected status code: got %v want %v", span.Status.Code, codes.Ok)
+		}
+	})
+}
+
 func getSpanByName(spans tracetest.SpanStubs, name string, wantAttributes map[string]any) (tracetest.SpanStub, error) {
 	for _, span := range spans {
 		if span.Name != name {
