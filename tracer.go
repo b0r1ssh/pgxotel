@@ -21,7 +21,7 @@ import (
 
 const (
 	ScopeName = "github.com/b0r1sh/pgxotel"
-	Version   = "1.1.1"
+	Version   = "1.2.0"
 
 	spanConnect = "db.connect"
 	spanAcquire = "db.pool.acquire"
