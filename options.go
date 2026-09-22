@@ -23,7 +23,9 @@ type tracerProviderOption struct {
 }
 
 func (t tracerProviderOption) apply(opts *options) {
-	opts.tracerProvider = t.TracerProvider
+	if t.TracerProvider != nil {
+		opts.tracerProvider = t.TracerProvider
+	}
 }
 
 // WithTracerProvider sets the tracer provider to use for creating spans. If not set, the global tracer provider will be used.

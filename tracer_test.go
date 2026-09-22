@@ -100,6 +100,36 @@ func TestTraceConnect(t *testing.T) {
 		}
 	})
 
+	t.Run("with search_path", func(t *testing.T) {
+		t.Parallel()
+
+		tp, exporter, config := setupFixture(t)
+		config.RuntimeParams["search_path"] = "app, public"
+
+		rootCtx, rootSpan := tp.Tracer("tracer").Start(t.Context(), "root")
+		t.Cleanup(func() { rootSpan.End() })
+
+		conn, err := pgx.ConnectConfig(rootCtx, config)
+		if err != nil {
+			t.Fatalf("connect to postgres: %v", err)
+		}
+		t.Cleanup(func() { _ = conn.Close(context.Background()) })
+
+		span, err := getSpanByName(exporter.GetSpans(), "db.connect", map[string]any{
+			"db.system.name": "postgresql",
+			"server.address": "localhost",
+			"server.port":    5432,
+			"user.name":      "pgxotel",
+			"db.namespace":   "pgxotel|app",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if span.Status.Code != codes.Ok {
+			t.Fatalf("unexpected status code: got %v want %v", span.Status.Code, codes.Ok)
+		}
+	})
+
 	t.Run("with error", func(t *testing.T) {
 		t.Parallel()
 
@@ -115,7 +145,6 @@ func TestTraceConnect(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected connection error")
 		}
-		connectionErr := err
 
 		span, err := getSpanByName(exporter.GetSpans(), "db.connect", map[string]any{
 			"db.system.name": "postgresql",
@@ -123,7 +152,7 @@ func TestTraceConnect(t *testing.T) {
 			"server.port":    5432,
 			"user.name":      "pgxotel",
 			"db.namespace":   "pgxotel",
-			"error.type":     connectionErr.Error(),
+			"error.type":     "*errors.joinError",
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -210,7 +239,6 @@ func TestTraceAcquire(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected acquire error")
 		}
-		acquireErr := err
 
 		span, err := getSpanByName(exporter.GetSpans(), "db.pool.acquire", map[string]any{
 			"db.system.name": "postgresql",
@@ -218,7 +246,7 @@ func TestTraceAcquire(t *testing.T) {
 			"server.port":    5432,
 			"user.name":      "pgxotel",
 			"db.namespace":   "pgxotel",
-			"error.type":     acquireErr.Error(),
+			"error.type":     "*errors.joinError",
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -281,7 +309,6 @@ func TestTraceBatch(t *testing.T) {
 			"db.operation.name":         "SELECT",
 			"db.response.returned_rows": 1,
 			"db.query.text":             "SELECT $1::int",
-			"db.query.parameter.0":      "42",
 			"test.attribute":            "batch",
 		})
 		if err != nil {
@@ -588,6 +615,84 @@ func TestTraceQuery(t *testing.T) {
 			"db.response.returned_rows": 0,
 			"db.response.status_code":   "42P01",
 			"error.type":                "UndefinedTable",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if span.Status.Code != codes.Error {
+			t.Fatalf("unexpected status code: got %v want %v", span.Status.Code, codes.Error)
+		}
+	})
+
+	t.Run("with unmapped SQLSTATE", func(t *testing.T) {
+		t.Parallel()
+
+		tp, exporter, config := setupFixture(t)
+		rootCtx, rootSpan := tp.Tracer("tracer").Start(t.Context(), "root")
+		t.Cleanup(func() { rootSpan.End() })
+
+		conn, err := pgx.ConnectConfig(rootCtx, config)
+		if err != nil {
+			t.Fatalf("connect to postgres: %v", err)
+		}
+		t.Cleanup(func() { _ = conn.Close(context.Background()) })
+
+		_, err = conn.Exec(rootCtx, "DO $$ BEGIN RAISE EXCEPTION 'custom' USING ERRCODE = '99999'; END $$;")
+		if err == nil {
+			t.Fatal("expected query error")
+		}
+
+		span, err := getSpanByName(exporter.GetSpans(), "db.query", map[string]any{
+			"db.system.name":            "postgresql",
+			"server.address":            "localhost",
+			"server.port":               5432,
+			"user.name":                 "pgxotel",
+			"db.namespace":              "pgxotel",
+			"db.query.text":             "DO $$ BEGIN RAISE EXCEPTION 'custom' USING ERRCODE = '99999'; END $$;",
+			"db.operation.name":         "",
+			"db.response.returned_rows": 0,
+			"db.response.status_code":   "99999",
+			"error.type":                "99999",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if span.Status.Code != codes.Error {
+			t.Fatalf("unexpected status code: got %v want %v", span.Status.Code, codes.Error)
+		}
+	})
+
+	t.Run("with canceled context", func(t *testing.T) {
+		t.Parallel()
+
+		tp, exporter, config := setupFixture(t)
+		rootCtx, rootSpan := tp.Tracer("tracer").Start(t.Context(), "root")
+		t.Cleanup(func() { rootSpan.End() })
+
+		conn, err := pgx.ConnectConfig(rootCtx, config)
+		if err != nil {
+			t.Fatalf("connect to postgres: %v", err)
+		}
+		t.Cleanup(func() { _ = conn.Close(context.Background()) })
+
+		queryCtx, cancel := context.WithCancel(rootCtx)
+		cancel()
+
+		_, err = conn.Exec(queryCtx, "SELECT 1")
+		if err == nil {
+			t.Fatal("expected query error")
+		}
+
+		span, err := getSpanByName(exporter.GetSpans(), "db.query", map[string]any{
+			"db.system.name":            "postgresql",
+			"server.address":            "localhost",
+			"server.port":               5432,
+			"user.name":                 "pgxotel",
+			"db.namespace":              "pgxotel",
+			"db.query.text":             "SELECT 1",
+			"db.operation.name":         "",
+			"db.response.returned_rows": 0,
+			"error.type":                "context.Canceled",
 		})
 		if err != nil {
 			t.Fatal(err)

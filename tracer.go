@@ -55,7 +55,7 @@ func NewTracer(opts ...Option) *Tracer {
 
 	return &Tracer{
 		tracer:              tracer,
-		attributes:          o.attributes,
+		attributes:          append([]attribute.KeyValue(nil), o.attributes...),
 		captureQueryParams:  o.captureQueryParams,
 		captureNetworkAttrs: o.captureNetworkAttrs,
 		trimQueryComments:   o.trimQueryComments,
@@ -68,7 +68,7 @@ func (t *Tracer) TraceConnectStart(ctx context.Context, data pgx.TraceConnectSta
 		return ctx
 	}
 
-	attrs := append(t.attributes, connectionAttributesFromPgxConfig(data.ConnConfig)...)
+	attrs := t.attributesWith(connectionAttributesFromConfig(data.ConnConfig))
 
 	spanCtx, _ := t.tracer.Start(ctx, spanConnect,
 		trace.WithSpanKind(trace.SpanKindClient),
@@ -105,7 +105,7 @@ func (t *Tracer) TraceAcquireStart(ctx context.Context, pool *pgxpool.Pool, _ pg
 		return ctx
 	}
 
-	attrs := append(t.attributes, connectionAttributesFromPgxConfig(pool.Config().ConnConfig)...)
+	attrs := t.attributesWith(connectionAttributesFromPool(pool))
 
 	spanCtx, _ := t.tracer.Start(ctx, spanAcquire,
 		trace.WithSpanKind(trace.SpanKindClient),
@@ -139,7 +139,7 @@ func (t *Tracer) TraceCopyFromStart(ctx context.Context, conn *pgx.Conn, data pg
 		return ctx
 	}
 
-	attrs := append(t.attributes, connectionAttributesFromPgxConfig(conn.Config())...)
+	attrs := t.attributesWith(connectionAttributesFromConn(conn))
 	if t.captureNetworkAttrs {
 		attrs = append(attrs, networkPeerAttributesFromConn(conn)...)
 	}
@@ -177,7 +177,7 @@ func (t *Tracer) TracePrepareStart(ctx context.Context, conn *pgx.Conn, data pgx
 		return ctx
 	}
 
-	attrs := append(t.attributes, connectionAttributesFromPgxConfig(conn.Config())...)
+	attrs := t.attributesWith(connectionAttributesFromConn(conn))
 	if t.captureNetworkAttrs {
 		attrs = append(attrs, networkPeerAttributesFromConn(conn)...)
 	}
@@ -215,7 +215,7 @@ func (t *Tracer) TraceBatchStart(ctx context.Context, conn *pgx.Conn, data pgx.T
 		return ctx
 	}
 
-	attrs := append(t.attributes, connectionAttributesFromPgxConfig(conn.Config())...)
+	attrs := t.attributesWith(connectionAttributesFromConn(conn))
 	if t.captureNetworkAttrs {
 		attrs = append(attrs, networkPeerAttributesFromConn(conn)...)
 	}
@@ -258,14 +258,10 @@ func (t *Tracer) TraceBatchQuery(ctx context.Context, conn *pgx.Conn, data pgx.T
 		return
 	}
 
-	attrs := append(t.attributes, connectionAttributesFromPgxConfig(conn.Config())...)
+	attrs := t.attributesWith(connectionAttributesFromConn(conn))
 	attrs = append(attrs, operationAttributeFromCommandTag(data.CommandTag))
 	attrs = append(attrs, retunredRowsAttributeFromCommandTag(data.CommandTag))
 	attrs = append(attrs, queryAttributeFromQuery(data.SQL, t.trimQueryComments))
-
-	if t.captureQueryParams {
-		attrs = append(attrs, queryParameterAttributesFromArgs(data.Args)...)
-	}
 
 	span.SetAttributes(attrs...)
 }
@@ -276,7 +272,7 @@ func (t *Tracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.T
 		return ctx
 	}
 
-	attrs := append(t.attributes, connectionAttributesFromPgxConfig(conn.Config())...)
+	attrs := t.attributesWith(connectionAttributesFromConn(conn))
 	if t.captureNetworkAttrs {
 		attrs = append(attrs, networkPeerAttributesFromConn(conn)...)
 	}
@@ -315,7 +311,7 @@ func (t *Tracer) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, data pgx.Tra
 	}
 }
 
-func connectionAttributesFromPgxConfig(config *pgx.ConnConfig) []attribute.KeyValue {
+func connectionAttributesFromConfig(config *pgx.ConnConfig) []attribute.KeyValue {
 	attrs := make([]attribute.KeyValue, 0)
 
 	if config != nil {
@@ -328,11 +324,62 @@ func connectionAttributesFromPgxConfig(config *pgx.ConnConfig) []attribute.KeyVa
 			attrs = append(attrs, semconv.UserName(config.User))
 		}
 
-		if config.Database != "" {
-			attrs = append(attrs, semconv.DBNamespace(config.Database))
+		if namespace := namespaceFromConfig(config); namespace != "" {
+			attrs = append(attrs, semconv.DBNamespace(namespace))
 		}
 	}
 
+	return attrs
+}
+
+// namespaceFromConfig builds db.namespace as "{database}|{schema}" per the PostgreSQL
+// semantic conventions, using the search_path set at connection time to avoid an
+// extra round trip. Only the first schema in search_path is used.
+func namespaceFromConfig(config *pgx.ConnConfig) string {
+	schema := firstSearchPathSchema(config.RuntimeParams["search_path"])
+
+	switch {
+	case config.Database != "" && schema != "":
+		return config.Database + "|" + schema
+	case schema != "":
+		return schema
+	default:
+		return config.Database
+	}
+}
+
+func firstSearchPathSchema(searchPath string) string {
+	schema, _, _ := strings.Cut(searchPath, ",")
+	return strings.Trim(strings.TrimSpace(schema), `"`)
+}
+
+func connectionAttributesFromConn(conn *pgx.Conn) []attribute.KeyValue {
+	if conn == nil {
+		return nil
+	}
+
+	return connectionAttributesFromConfig(conn.Config())
+}
+
+func connectionAttributesFromPool(pool *pgxpool.Pool) []attribute.KeyValue {
+	if pool == nil || pool.Config() == nil {
+		return nil
+	}
+
+	return connectionAttributesFromConfig(pool.Config().ConnConfig)
+}
+
+func (t *Tracer) attributesWith(groups ...[]attribute.KeyValue) []attribute.KeyValue {
+	length := len(t.attributes)
+	for _, group := range groups {
+		length += len(group)
+	}
+
+	attrs := make([]attribute.KeyValue, 0, length)
+	attrs = append(attrs, t.attributes...)
+	for _, group := range groups {
+		attrs = append(attrs, group...)
+	}
 	return attrs
 }
 
@@ -490,5 +537,22 @@ func pgErrType(err error) string {
 		return pgErr.Code
 	}
 
-	return err.Error()
+	if errors.Is(err, context.Canceled) {
+		return "context.Canceled"
+	}
+
+	// err.Error() is unbounded and may embed dynamic details (hosts, ports,
+	// timings). pgx wraps connection failures in generic container types, so
+	// unwrap to the innermost error for a stable, low-cardinality classification.
+	return fmt.Sprintf("%T", rootCause(err))
+}
+
+func rootCause(err error) error {
+	for {
+		unwrapped := errors.Unwrap(err)
+		if unwrapped == nil {
+			return err
+		}
+		err = unwrapped
+	}
 }

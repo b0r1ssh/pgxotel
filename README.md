@@ -5,9 +5,11 @@
 [![codecov](https://codecov.io/gh/b0r1ssh/pgxotel/graph/badge.svg?token=7ZA7WM97TV)](https://codecov.io/gh/b0r1ssh/pgxotel)
 
 A small Go package providing OpenTelemetry tracing instrumentation for pgx v5.
+It creates client spans for PostgreSQL operations and records attributes from
+the OpenTelemetry PostgreSQL semantic conventions.
 
-It creates spans for PostgreSQL operations and enriches them with database,
-query, connection, and error details.
+The instrumentation scope is `github.com/b0r1sh/pgxotel`. Spans are created
+with the instrumentation version reported by this module.
 
 ## Features
 
@@ -16,6 +18,41 @@ query, connection, and error details.
 - PostgreSQL SQLSTATE error names and span status recording
 - Optional query parameter, network attribute, and SQL comment controls
 - Custom tracer providers and attributes
+
+## OpenTelemetry conventions
+
+The implementation follows the [OpenTelemetry PostgreSQL semantic
+conventions](https://opentelemetry.io/docs/specs/semconv/db/postgresql/) and
+the [database client span conventions](https://opentelemetry.io/docs/specs/semconv/db/database-spans/).
+The emitted attributes currently include:
+
+| Attribute | When it is emitted |
+| --- | --- |
+| `db.system.name = postgresql` | All database and connection spans |
+| `server.address`, `server.port` | From the pgx connection configuration |
+| `db.namespace` | `{database}\|{schema}`, when available |
+| `user.name` | The configured PostgreSQL user, when available |
+| `db.query.text` | Query, batch item, and prepare spans |
+| `db.operation.name` | The PostgreSQL command tag, when available |
+| `db.response.returned_rows` | Query and batch spans |
+| `db.response.status_code` | Failed PostgreSQL operations with a SQLSTATE |
+| `error.type` | Failed operations; PostgreSQL errors use the SQLSTATE name or code, other errors use a low-cardinality Go error type |
+| `db.collection.name` | `COPY` operations when the target table is known |
+| `db.operation.batch.size` | Batch spans |
+
+`db.namespace` is set to `{database}|{schema}` using the first schema in
+`search_path` when it was provided at connection time (for example via
+`options=-c search_path=...` in the connection string), falling back to the
+database name alone otherwise. It is not updated if the search path changes
+later in the connection's lifetime, since tracking that would require an extra
+query per operation.
+
+The span kind is `CLIENT`. Successful operations are marked `OK`; failures are
+recorded with an exception event, `ERROR` status, and SQLSTATE attributes when
+PostgreSQL provides them. For non-PostgreSQL errors (connection failures,
+context cancellation, and similar), `error.type` is the Go type of the
+innermost wrapped error (for example `*net.OpError`) rather than the error
+message, keeping the attribute low-cardinality as the conventions require.
 
 ## Installation
 
@@ -135,6 +172,23 @@ Pass options to `pgxotel.NewTracer`. All options are optional.
 | `WithNetworkAttributes(enabled)` | `false` | Adds network peer and local address attributes to connection and database operation spans. |
 | `WithTrimQueryComments(enabled)` | `false` | Removes line and block comments from `db.query.text` when enabled. The remaining SQL whitespace is normalized. |
 
+Query text is captured by default. Parameterized SQL text is generally safe to
+capture because values remain separate, but this package does not sanitize
+literal values in non-parameterized SQL. The PostgreSQL conventions recommend
+sanitizing such text before collection, so review your queries and telemetry
+access policy before enabling this instrumentation for sensitive workloads.
+
+`WithQueryParameters(true)` records values as
+`db.query.parameter.0`, `db.query.parameter.1`, and so on for regular query
+spans. Parameter capture is disabled by default and is never added to batch
+spans, as required by the PostgreSQL semantic conventions. Values may contain
+credentials, personal data, or other sensitive information.
+
+`WithNetworkAttributes(true)` adds the observed peer and local socket
+attributes (`network.*`). The connection configuration attributes above are
+always recorded when available; network attributes require an established
+connection and are therefore added only when the socket can be inspected.
+
 For example, query parameter capture must be explicitly enabled:
 
 ```go
@@ -142,6 +196,63 @@ tracer := pgxotel.NewTracer(
 	pgxotel.WithQueryParameters(true),
 )
 ```
+
+## Local development
+
+The integration tests expect PostgreSQL at the URL used in
+`tracer_test.go`. Start the included database and run the tests with:
+
+```sh
+docker compose up -d --wait postgres
+go test -race ./...
+docker compose down -v
+```
+
+For unit-style usage without PostgreSQL, use a non-recording context or an
+in-memory OpenTelemetry exporter in your own tests. The tracer intentionally
+does not create child spans unless the context passed to pgx contains an active
+recording span.
+
+## Compatibility and scope
+
+- Requires Go 1.25 or newer and pgx v5.
+- This package provides tracing instrumentation only; it does not provide
+	OpenTelemetry metrics for PostgreSQL client operations.
+- It does not parse SQL to derive `db.query.summary` or extract table names
+	from query text.
+- `db.namespace` reflects the schema active in `search_path` at connection
+	time only; it is not re-evaluated if the application changes the search
+	path later on the same connection.
+- Query parameter values are converted to strings using Go formatting. They are
+	not normalized or redacted.
+- A pgx batch callback is represented as one batch span even when the batch
+  contains one operation; the semantic conventions recommend modeling a
+  single-operation batch as a regular database operation. `db.operation.name`
+  and `db.response.returned_rows` on a batch span currently reflect only the
+  last item in the batch.
+
+See the [OpenTelemetry PostgreSQL conventions](https://opentelemetry.io/docs/specs/semconv/db/postgresql/)
+for the requirements that apply to downstream exporters and collectors.
+
+## Recommended next improvements
+
+For closer alignment with the current conventions, the next implementation
+steps would be:
+
+1. Add opt-in SQL literal sanitization, or make sanitized query text the
+	default for non-parameterized statements.
+2. Add low-cardinality `db.query.summary` generation and use it for span names
+	when it is available.
+3. Aggregate `db.operation.name` and `db.response.returned_rows` across all
+	items in a batch (for example `BATCH SELECT` when homogeneous, `BATCH`
+	otherwise, and a summed row count) instead of reporting only the last item.
+4. Re-evaluate `db.namespace` when the application changes `search_path` on an
+	existing connection, or expose an explicit namespace override option.
+5. Record the `db.client.operation.exception` event described by the
+	[database exceptions conventions](https://opentelemetry.io/docs/specs/semconv/db/database-exceptions/)
+	in addition to the standard OpenTelemetry `exception` event.
+6. Add PostgreSQL client metrics such as operation duration and connection pool
+	usage.
 
 ## Release workflow for contributors
 
