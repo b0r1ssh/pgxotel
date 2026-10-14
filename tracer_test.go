@@ -14,7 +14,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
-	"github.com/b0r1sh/pgxotel"
+	"github.com/b0r1ssh/pgxotel"
 )
 
 const databaseURL = "postgres://pgxotel:pgxotel@localhost:5432/pgxotel"

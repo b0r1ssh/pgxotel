@@ -8,7 +8,7 @@ A small Go package providing OpenTelemetry tracing instrumentation for pgx v5.
 It creates client spans for PostgreSQL operations and records attributes from
 the OpenTelemetry PostgreSQL semantic conventions.
 
-The instrumentation scope is `github.com/b0r1sh/pgxotel`. Spans are created
+The instrumentation scope is `github.com/b0r1ssh/pgxotel`. Spans are created
 with the instrumentation version reported by this module.
 
 ## Features
@@ -65,7 +65,7 @@ spans are named `BATCH`, since a batch can contain multiple operations.
 ## Installation
 
 ```sh
-go get github.com/b0r1sh/pgxotel
+go get github.com/b0r1ssh/pgxotel
 ```
 
 ## Set up tracing with pgx
@@ -86,7 +86,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/b0r1sh/pgxotel"
+	"github.com/b0r1ssh/pgxotel"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"

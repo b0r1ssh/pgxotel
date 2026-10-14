@@ -1,4 +1,4 @@
-module github.com/b0r1sh/pgxotel
+module github.com/b0r1ssh/pgxotel
 
 go 1.25.0
 
