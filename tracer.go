@@ -20,8 +20,8 @@ import (
 )
 
 const (
-	ScopeName = "github.com/b0r1sh/pgxotel"
-	Version   = "1.2.0"
+	ScopeName = "github.com/b0r1ssh/pgxotel"
+	Version   = "1.3.0"
 
 	spanConnect = "db.connect"
 	spanAcquire = "db.pool.acquire"
